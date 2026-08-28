@@ -1,0 +1,12 @@
+name: Security Scan
+on: [push, pull_request]
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: '1.24'}
+      - run: go run ./cmd/analyzer/main.go --target . --export-format json,sarif --output report.json
+      - uses: actions/upload-artifact@v4
+        with: {name: security-report, path: 'report.*'}

@@ -1,0 +1,12 @@
+/analyzer
+/report.json
+/report.html
+/report.pdf
+/report.sarif
+/report.xml
+/report.csv
+/analyzer.db
+/sbom.*.json
+/sbom.*.xml
+/.env
+/.gocache/

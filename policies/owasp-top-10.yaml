@@ -1,0 +1,8 @@
+policy:
+  name: OWASP Top 10
+  version: "2021"
+  rules:
+    - {name: injection, type: cwe, cwe: 89, enabled: true, severity: critical}
+    - {name: broken-access-control, type: cwe, cwe: 862, enabled: true, severity: critical}
+filtering: {exclude_paths: [vendor/, node_modules/, .git/], minimum_severity: low}
+compliance: {frameworks: [owasp-top-10]}

@@ -1,0 +1,8 @@
+policy:
+  name: PCI DSS
+  version: "4.0"
+  rules:
+    - {name: credentials, type: cwe, cwe: 798, enabled: true, severity: critical}
+    - {name: injection, type: cwe, cwe: 89, enabled: true, severity: critical}
+filtering: {exclude_paths: [vendor/, node_modules/, .git/], minimum_severity: medium}
+compliance: {frameworks: [pci-dss]}

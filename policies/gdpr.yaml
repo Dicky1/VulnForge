@@ -1,0 +1,8 @@
+policy:
+  name: GDPR Engineering
+  version: "1.0"
+  rules:
+    - {name: weak-crypto, type: cwe, cwe: 327, enabled: true, severity: high}
+    - {name: credentials, type: cwe, cwe: 798, enabled: true, severity: critical}
+filtering: {exclude_paths: [vendor/, node_modules/, .git/], minimum_severity: medium}
+compliance: {frameworks: [gdpr]}

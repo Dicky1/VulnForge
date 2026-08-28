@@ -1,0 +1,9 @@
+pipeline {
+  agent any
+  stages {
+    stage('Security Scan') {
+      steps { sh 'go run ./cmd/analyzer/main.go --target . --export-format json,sarif --output report.json' }
+    }
+  }
+  post { always { archiveArtifacts artifacts: 'report.*' } }
+}

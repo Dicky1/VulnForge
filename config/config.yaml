@@ -1,0 +1,76 @@
+ai:
+  provider: "anthropic" # anthropic atau 9router
+ninerouter:
+  base_url: "http://localhost:20128"
+  api_key: "" # Prefer NINEROUTER_KEY; optional if local auth is disabled.
+  model: "" # Required when provider=9router; get IDs from /v1/models.
+  max_retries: 3
+  timeout_seconds: 60
+  health_check: true
+analyzer:
+  target_path: ""
+  output_path: "report.json"
+  export_formats: [json]
+  policy: "policies/default.yaml"
+storage:
+  enabled: false
+  type: sqlite
+  database_path: "analyzer.db"
+  retention_days: 90
+secret_detection:
+  enabled: true
+  high_entropy_threshold: 4.5
+  exclude_paths: [test/, vendor/, node_modules/]
+  tools: [native_patterns]
+scoring:
+  cvss_enabled: true
+  cvss_version: "3.1"
+  severity_mapping: true
+remediation:
+  enabled: true
+  ai_powered: false
+  include_code_examples: true
+report:
+  formats: [json]
+  include_compliance: true
+  include_remediation: true
+  include_trend: false
+container:
+  scanning_enabled: false
+  scanner: trivy
+  registries: [docker.io]
+sbom:
+  generate: false
+  format: cyclonedx
+  include_vulnerabilities: true
+integrations:
+  github_actions: false
+  gitlab_ci: false
+  jenkins: false
+  pre_commit: false
+claude:
+  api_key: "" # Prefer ANTHROPIC_API_KEY.
+  model: "claude-opus-4-8"
+  max_retries: 3
+  timeout_seconds: 30
+sast:
+  enabled: true
+  tools: [semgrep, bandit, gosec]
+  timeout: 600
+dast:
+  enabled: false
+  timeout_seconds: 20
+  max_body_bytes: 1048576
+validator:
+  enable_ai: true
+  confidence_threshold: 0.75
+  batch_size: 10
+  max_workers: 4
+optimizer:
+  max_token_budget: 5000
+  dedup_enabled: true
+  severity_weighting: true
+  skip_patterns: ["TODO", "debug", "test.*password", "fixture"]
+zerodaydetection:
+  enable: true
+  focus_areas: [crypto, validation, authorization, logic, race_conditions]

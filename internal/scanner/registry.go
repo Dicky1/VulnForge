@@ -56,6 +56,8 @@ func languageFromPath(path string) string {
 		return "swift"
 	case ".kt", ".kts":
 		return "kotlin"
+	case ".sol":
+		return "solidity"
 	}
 	return "unknown"
 }
@@ -85,5 +87,6 @@ func NewToolRegistry(timeout time.Duration) models.ToolRegistry {
 		}},
 		"eslint": NewESLintScanner(), "spotbugs": NewSpotBugsScanner(), "phpstan": NewPHPStanScanner(), "psalm": NewPsalmScanner(),
 		"cargo-audit": NewCargoAuditScanner(), "brakeman": NewBrakemanScanner(), "dependency-check": NewDependencyCheckScanner(), "clang-analyzer": NewClangAnalyzerScanner(),
+		"slither": NewSlitherScanner(),
 	}
 }

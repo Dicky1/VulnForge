@@ -35,3 +35,54 @@ func TestFindProjectRoot(t *testing.T) {
 		t.Fatalf("got %s, want %s", got, root)
 	}
 }
+
+func TestDetectSolidityProject(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"foundry.toml", "Vault.sol"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(""), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dependency := filepath.Join(root, "lib", "dependency")
+	if err := os.MkdirAll(dependency, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dependency, "build.py"), []byte(""), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := NewLanguageDetector(root).DetectLanguages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["solidity"].FileCount != 2 {
+		t.Fatalf("unexpected Solidity detection: %#v", got)
+	}
+	if _, found := got["python"]; found {
+		t.Fatalf("Foundry lib dependency must not affect language planning: %#v", got)
+	}
+	tools := NewLanguageDetector(root).GetRecommendedToolsForLanguages(got)
+	if len(tools["solidity"]) != 1 || tools["solidity"][0] != "slither" {
+		t.Fatalf("unexpected Solidity tools: %#v", tools)
+	}
+}
+
+func TestGradleKotlinScriptDoesNotImplyKotlinSource(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "build.gradle.kts"), []byte("plugins {}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := NewLanguageDetector(root).DetectLanguages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found := got["kotlin"]; found {
+		t.Fatalf("Gradle DSL misdetected as Kotlin source: %#v", got)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Main.kt"), []byte("fun main() {}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err = NewLanguageDetector(root).DetectLanguages()
+	if err != nil || got["kotlin"].FileCount != 1 {
+		t.Fatalf("Kotlin source not detected: %#v, %v", got, err)
+	}
+}

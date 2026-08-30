@@ -1,14 +1,16 @@
 # Multi-language SAST/DAST Analyzer with AI validation
 
-Security-analysis CLI for consolidating Semgrep, Bandit, and GoSec output, reducing duplicates, validating high-priority findings with Claude, and heuristically surfacing anomalous code paths for expert review.
+Security-analysis CLI that detects project languages, plans compatible scanners, normalizes and deduplicates their output, optionally validates high-priority findings with AI, and generates technical, management, and bug-bounty reports.
 
 > “Zero-day” findings are hypotheses, not proof of a previously unknown vulnerability. Always reproduce and manually review them before disclosure.
 
 ## Requirements
 
 - Go 1.24+
-- One or more scanners on `PATH`. Language-aware selection supports Semgrep, Bandit, GoSec, ESLint, SpotBugs, PHPStan, Psalm, Cargo Audit, Brakeman, OWASP Dependency-Check, and Clang Analyzer.
+- One or more scanners on `PATH`. Language-aware selection supports Semgrep, Bandit, GoSec, ESLint, SpotBugs, PHPStan, Psalm, Cargo Audit, Brakeman, Slither, OWASP Dependency-Check, and Clang Analyzer.
 - Anthropic API key or a running 9Router instance for AI validation. AI remains optional; scanning degrades gracefully when unavailable.
+
+Some scanners also require their language toolchain. For example, `cargo-audit` requires Cargo, Slither requires Python, Foundry-based Solidity projects may require `forge`, ESLint requires Node.js/npm, and Clang Analyzer requires LLVM/Clang. A report may still be exported when scanners are skipped, so always review the scanner-plan and degraded-mode messages in the console.
 
 ```sh
 pip install semgrep
@@ -58,7 +60,20 @@ The CLI writes `report.json` in the current directory. Configure scanner timeout
 
 The optional DAST URL enables a passive, non-mutating HTTP baseline scan for HTTPS, cookie flags, and response security headers. Only scan systems you own or are explicitly authorized to assess.
 
-The detector recognizes Go, Python, JavaScript/TypeScript, Java, C/C++, PHP, Rust, Ruby, .NET, Swift, and Kotlin projects. Polyglot repositories are supported: recommended scanners are deduplicated and run through a bounded worker pool. Tools without an implemented wrapper are logged and skipped.
+The detector recognizes Go, Python, JavaScript/TypeScript, Java, C/C++, PHP, Rust, Ruby, .NET, Swift, Kotlin, and Solidity projects. Foundry dependencies under `lib/` are excluded from language planning; Slither still resolves them while compiling the Solidity project. Polyglot repositories are supported and scanners are deduplicated through a bounded worker pool.
+
+## Environment manager
+
+Copy `.env.example` to `.env`; the analyzer loads it automatically before YAML configuration and scanner planning:
+
+```powershell
+Copy-Item .env.example .env
+.\analyzer.exe --target "C:\path\to\project" --output report.json
+```
+
+With `ANALYZER_AUTO_INSTALL=true`, the environment manager attempts to install supported missing scanners. The relevant package manager or toolchain must already exist; for example, Cargo must be installed before `cargo-audit` can be installed. Set `ANALYZER_AI_ENABLED=false` for a scanner-only run. Existing shell variables override `.env`. Set `ANALYZER_ENV_FILE` to use another environment file. Platform toolchains such as Foundry/`forge` and LLVM still need to be installed through their official installers; common per-user locations such as `~/.foundry/bin` are discovered automatically.
+
+Keep `ANALYZER_AUTO_INSTALL=false` when scanning repositories you do not fully trust. The analyzer may inspect installation hints in target documentation, so enable automatic installation only for trusted targets and preferably inside an isolated environment.
 
 ## AI provider: Anthropic or 9Router
 
@@ -109,20 +124,34 @@ ninerouter:
   health_check: true
 ```
 
-`NINEROUTER_KEY` is preferred over storing a key in YAML. Model IDs depend on the providers and combos configured in your 9Router dashboard; use the exact ID returned by `/v1/models`.
+`NINEROUTER_KEY` is preferred over storing a key in YAML. Never commit `.env` or real API keys. If a key has entered Git history, remove it and rotate it before publishing the repository. Model IDs depend on the providers and combos configured in your 9Router dashboard; use the exact ID returned by `/v1/models`.
 
 ## Extended security pipeline
 
 The analyzer also provides native secret detection with redacted evidence, CVSS v3.1 scoring, local and optional Claude-powered remediation, OWASP/CWE/compliance mapping, custom YAML policies, SQLite history, container scanning through Trivy or Grype, and CycloneDX/SPDX SBOM generation.
 
-Export all supported report formats:
+Export all supported report formats (`html` is the offline interactive business report; `dashboard` emits a separate `.dashboard.html` copy):
 
 ```sh
 go run ./cmd/analyzer/main.go --target ./project \
   --policy policies/default.yaml \
-  --export-format json,html,pdf,sarif,xml,csv \
+  --export-format json,html,dashboard,pdf,sarif,xml,csv \
   --output report.json
 ```
+
+Generate a bug-bounty submission bundle (JSON, Markdown, HTML, PDF, and plaintext):
+
+```powershell
+.\analyzer.exe --target "C:\path\to\project" `
+  --policy policies/default.yaml `
+  --export-format json,html,sarif,bounty-report `
+  --bounty-program yeswehack `
+  --output report.json
+```
+
+Supported bounty adapters are `hackerone`, `bugcrowd`, `intigriti`, `yeswehack`, and `federacy`. With `--output report.json`, the bundle uses names such as `report.bounty.json`, `report.bounty.md`, `report.bounty.html`, `report.bounty.pdf`, and `report.bounty.txt`.
+
+The bounty quality gate filters ineligible candidates and does not treat static scanner output as submission-ready evidence. An empty bundle is valid and means no finding passed the current eligibility checks. Generated items remain human-review drafts; verify the exact vulnerable asset, program scope, runtime reproduction, impact, and evidence before submission. POCs use non-destructive markers and must only be run with written authorization. The analyzer does not submit reports to a bounty platform.
 
 History and SBOM:
 
@@ -163,7 +192,7 @@ On Linux/macOS, install package-manager-based scanners with:
 bash tools/install_dependencies.sh
 ```
 
-README commands are parsed automatically. They are only installed when `ANALYZER_AUTO_INSTALL=1`, and even then the setup agent permits only recognized Semgrep/Bandit/GoSec install forms. Arbitrary shell expressions and Docker commands are never executed.
+Target documentation may be inspected for scanner installation hints when automatic installation is enabled. Treat this as execution of third-party dependency installation instructions: use it only with trusted repositories, review the console output, and prefer a disposable VM or container.
 
 ## How the pipeline works
 
@@ -177,8 +206,14 @@ The AI stage sends finding metadata and code snippets to the selected provider. 
 
 ## Verification
 
-```sh
+Before pushing to GitHub, run:
+
+```powershell
+gofmt -l .
 go test ./...
 go vet ./...
-go build ./cmd/analyzer
+go build -o analyzer.exe ./cmd/analyzer
+git diff --check
 ```
+
+`gofmt -l .` should print nothing. Also inspect `git status` and `git diff`, confirm that no `.env`, API key, generated report, local database, or target source snippet is staged, and publish release binaries through GitHub Releases instead of committing them to the source tree.

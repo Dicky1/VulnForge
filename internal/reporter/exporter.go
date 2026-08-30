@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
-	"html/template"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -25,6 +24,10 @@ func (re *ReportExporter) Export(r models.Report, format, path string) error {
 		return re.ExportJSON(r, path)
 	case "html":
 		return re.ExportHTML(r, path)
+	case "dashboard":
+		return re.ExportHTML(r, path)
+	case "bounty-report":
+		return re.ExportBountyBundle(r, path)
 	case "pdf":
 		return re.ExportPDF(r, path)
 	case "sarif":
@@ -45,20 +48,8 @@ func (*ReportExporter) ExportJSON(r models.Report, path string) error {
 	return write(path, b)
 }
 
-const htmlDocument = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Security Report</title><style>body{font:14px system-ui;margin:0;background:#f4f6f8;color:#18202a}main{max-width:1100px;margin:auto;padding:28px}.card{background:white;border-radius:10px;padding:20px;margin:14px 0;box-shadow:0 2px 8px #0001}.stats{display:flex;gap:15px;flex-wrap:wrap}.stat{flex:1;min-width:140px}.critical{color:#a40018}.high{color:#d54b00}table{border-collapse:collapse;width:100%}th,td{padding:8px;border-bottom:1px solid #ddd;text-align:left}</style></head><body><main><h1>Security Analysis Report</h1><p>{{.TargetPath}} · {{.Language}} · {{.Timestamp}}</p><section class="stats"><div class="card stat"><b>Total</b><h2>{{.TotalFindings}}</h2></div><div class="card stat critical"><b>Critical</b><h2>{{.CriticalCount}}</h2></div><div class="card stat high"><b>High</b><h2>{{.HighCount}}</h2></div></section><div class="card"><h2>Findings</h2><table><tr><th>Severity</th><th>Finding</th><th>Location</th><th>CWE/CVSS</th></tr>{{range .Findings}}<tr><td>{{.Severity}}</td><td><b>{{.Title}}</b><br>{{.Description}}<br><small>{{.Remediation}}</small></td><td>{{.FilePath}}:{{.LineNumber}}</td><td>{{.CWE}} / {{.CVSSBase}}</td></tr>{{end}}</table></div></main></body></html>`
-
-var htmlReport = template.Must(template.New("report").Parse(htmlDocument))
-
 func (*ReportExporter) ExportHTML(r models.Report, path string) error {
-	if e := ensureDir(path); e != nil {
-		return e
-	}
-	f, e := os.Create(path)
-	if e != nil {
-		return e
-	}
-	defer f.Close()
-	return htmlReport.Execute(f, r)
+	return renderDashboard(r, path)
 }
 
 func (*ReportExporter) ExportPDF(r models.Report, path string) error {
@@ -70,6 +61,42 @@ func (*ReportExporter) ExportPDF(r models.Report, path string) error {
 	pdf.Ln(16)
 	pdf.SetFont("Arial", "", 10)
 	pdf.MultiCell(0, 6, fmt.Sprintf("Target: %s\nLanguages: %s\nGenerated: %s\nTotal: %d | Critical: %d | High: %d", r.TargetPath, r.Language, r.Timestamp.Format("2006-01-02 15:04 UTC"), r.TotalFindings, r.CriticalCount, r.HighCount), "", "L", false)
+	if r.BusinessReport != nil {
+		s := r.BusinessReport.ExecutiveSummary
+		pdf.Ln(5)
+		pdf.SetFont("Arial", "B", 14)
+		pdf.Cell(0, 8, "Executive Summary")
+		pdf.Ln(9)
+		pdf.SetFont("Arial", "", 10)
+		pdf.MultiCell(0, 6, fmt.Sprintf("Overall business risk: %s (%.0f/100)\n%s\n%s\nUrgency: %s", s.OverallRiskLevel, s.OverallRiskScore, s.BriefDescription, s.BusinessImpactSummary, s.Urgency), "1", "L", false)
+		pdf.Ln(6)
+		pdf.SetFont("Arial", "B", 14)
+		pdf.Cell(0, 8, "Top Business Priorities")
+		pdf.Ln(9)
+		limit := 5
+		if len(r.BusinessReport.Findings) < limit {
+			limit = len(r.BusinessReport.Findings)
+		}
+		for _, business := range r.BusinessReport.Findings[:limit] {
+			pdf.SetFont("Arial", "B", 10)
+			pdf.MultiCell(0, 5, fmt.Sprintf("Priority %d - %s", business.PriorityScore, business.Explanation.SimpleTitle), "", "L", false)
+			pdf.SetFont("Arial", "", 9)
+			pdf.MultiCell(0, 5, fmt.Sprintf("%s\nEstimated exposure: %s to %s\nFix summary: %s", business.Explanation.WhyDangerous, formatIDR(business.Impact.RevenueRiskMin), formatIDR(business.Impact.RevenueRiskMax), business.Explanation.FixSummary), "1", "L", false)
+		}
+		pdf.AddPage()
+		pdf.SetFont("Arial", "B", 16)
+		pdf.Cell(0, 10, "Remediation Roadmap")
+		pdf.Ln(12)
+		for _, phase := range r.BusinessReport.Roadmap.Phases {
+			pdf.SetFont("Arial", "B", 11)
+			pdf.Cell(0, 7, fmt.Sprintf("%s - %.1f hours", phase.Name, phase.TotalHours))
+			pdf.Ln(8)
+			pdf.SetFont("Arial", "", 9)
+			for _, item := range phase.Items {
+				pdf.MultiCell(0, 5, fmt.Sprintf("Priority %d: %s (%s)", item.Priority, item.Title, strings.Join(item.RequiredTeams, ", ")), "", "L", false)
+			}
+		}
+	}
 	for _, f := range r.Findings {
 		pdf.Ln(5)
 		pdf.SetFont("Arial", "B", 11)

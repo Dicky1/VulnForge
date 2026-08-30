@@ -38,7 +38,8 @@ var rules = []languageRule{
 	{"ruby", set("Gemfile", "Gemfile.lock"), set(".rb")},
 	{"dotnet", set("global.json", "Directory.Build.props"), set(".csproj", ".sln", ".cs", ".fsproj", ".vbproj")},
 	{"swift", set("Package.swift"), set(".swift")},
-	{"kotlin", set("build.gradle.kts"), set(".kt", ".kts")},
+	{"kotlin", set(), set(".kt")},
+	{"solidity", set("foundry.toml", "hardhat.config.js", "hardhat.config.ts", "truffle-config.js"), set(".sol")},
 }
 
 func set(v ...string) map[string]bool {
@@ -51,11 +52,15 @@ func set(v ...string) map[string]bool {
 
 func (ld *LanguageDetector) DetectLanguages() (map[string]LanguageInfo, error) {
 	out := map[string]LanguageInfo{}
+	_, isFoundryProject := os.Stat(filepath.Join(ld.targetPath, "foundry.toml"))
 	err := filepath.WalkDir(ld.targetPath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
 		if d.IsDir() {
+			if isFoundryProject == nil && d.Name() == "lib" && path != ld.targetPath {
+				return filepath.SkipDir
+			}
 			switch d.Name() {
 			case ".git", ".hg", ".svn", "vendor", "node_modules", ".gocache", "target", "bin", "obj":
 				if path != ld.targetPath {
@@ -88,7 +93,7 @@ func (ld *LanguageDetector) DetectLanguages() (map[string]LanguageInfo, error) {
 }
 
 func (ld *LanguageDetector) GetRecommendedToolsForLanguages(languages map[string]LanguageInfo) map[string][]string {
-	catalog := map[string][]string{"go": {"gosec", "staticcheck", "golangci-lint"}, "python": {"bandit", "pylint", "safety", "semgrep"}, "javascript": {"eslint", "npm-audit", "snyk", "semgrep"}, "java": {"spotbugs", "dependency-check", "semgrep"}, "php": {"phpstan", "psalm", "semgrep"}, "rust": {"cargo-audit", "clippy"}, "ruby": {"brakeman", "bundle-audit"}, "cpp": {"clang-analyzer", "cppcheck"}, "dotnet": {"fxcop", "security-code-scan"}, "swift": {"swiftlint"}, "kotlin": {"detekt", "semgrep"}}
+	catalog := map[string][]string{"go": {"gosec"}, "python": {"bandit", "semgrep"}, "javascript": {"eslint", "semgrep"}, "java": {"spotbugs", "dependency-check", "semgrep"}, "php": {"phpstan", "psalm", "semgrep"}, "rust": {"cargo-audit", "semgrep"}, "ruby": {"brakeman"}, "cpp": {"clang-analyzer"}, "kotlin": {"semgrep"}, "solidity": {"slither"}}
 	out := map[string][]string{}
 	for lang := range languages {
 		out[lang] = append([]string(nil), catalog[lang]...)

@@ -7,6 +7,8 @@ import (
 	"github.com/example/sast-dast-analyzer/internal/scanner"
 	"log"
 	"os/exec"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -53,9 +55,18 @@ func (a *SASTAgent) RunMultiLanguageSASTScan(ctx context.Context, target string,
 			tasks = append(tasks, task{lang, name, s})
 		}
 	}
-	// Dependency-Check is universal and runs once when installed or auto-install was requested.
-	if s, ok := registry["dependency-check"]; ok && !seen["dependency-check"] {
+	// Dependency-Check is universal, but its platform installation is not safe
+	// to automate. Include it silently only when the user already installed it.
+	if s, ok := registry["dependency-check"]; ok && !seen["dependency-check"] && s.IsInstalled() {
 		tasks = append(tasks, task{"all", "dependency-check", s})
+	}
+	planned := make([]string, 0, len(tasks))
+	for _, t := range tasks {
+		planned = append(planned, t.name+"["+t.lang+"]")
+	}
+	sort.Strings(planned)
+	if a.Logger != nil {
+		a.Logger.Printf("scanner plan: %s", strings.Join(planned, ","))
 	}
 	workers := a.MaxWorkers
 	if workers <= 0 {
@@ -77,8 +88,11 @@ func (a *SASTAgent) RunMultiLanguageSASTScan(ctx context.Context, target string,
 			defer func() { <-sem }()
 			if !t.scanner.IsInstalled() {
 				if !a.AutoInstall {
-					ch <- result{err: fmt.Errorf("not installed"), name: t.name}
+					ch <- result{err: fmt.Errorf("not installed (set ANALYZER_AUTO_INSTALL=true in .env)"), name: t.name}
 					return
+				}
+				if a.Logger != nil {
+					a.Logger.Printf("installing scanner %s", t.name)
 				}
 				if err := t.scanner.Install(ctx); err != nil {
 					ch <- result{err: fmt.Errorf("install: %w", err), name: t.name}

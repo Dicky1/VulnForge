@@ -27,3 +27,25 @@ func TestPackageLanguage(t *testing.T) {
 		t.Fatalf("got %s", got)
 	}
 }
+
+func TestSlitherParseOutput(t *testing.T) {
+	raw := []byte(`{"success":true,"results":{"detectors":[{"check":"reentrancy-eth","impact":"High","confidence":"Medium","description":"Reentrancy in Vault.withdraw()","elements":[{"source_mapping":{"filename_relative":"src/Vault.sol","lines":[42],"content":"call.value(amount)()"}}]}]}}`)
+	got, err := NewSlitherScanner().ParseOutput(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Language != "solidity" || got[0].FilePath != "src/Vault.sol" || got[0].LineNumber != 42 || got[0].Severity != "high" {
+		t.Fatalf("unexpected: %#v", got)
+	}
+}
+
+func TestSemgrepJSONIgnoresConsolePrefix(t *testing.T) {
+	raw := []byte("\xe2\x9c\xa8 Semgrep notice\r\n{\"results\":[],\"errors\":[]}")
+	got, err := semgrepJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{"results":[],"errors":[]}` {
+		t.Fatalf("unexpected JSON: %s", got)
+	}
+}

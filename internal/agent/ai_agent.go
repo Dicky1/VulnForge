@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/example/sast-dast-analyzer/internal/models"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -19,12 +20,53 @@ type AIValidationAgent struct {
 	ConfidenceThreshold   float64
 }
 type validation struct {
-	FindingIndex            int     `json:"finding_index"`
-	IsValid                 bool    `json:"is_valid"`
-	Confidence              float64 `json:"confidence"`
-	Reason                  string  `json:"reason"`
-	ExploitationFeasibility string  `json:"exploitation_feasibility"`
-	ZeroDayPotential        bool    `json:"zero_day_potential"`
+	FindingIndex            int           `json:"finding_index"`
+	IsValid                 flexibleBool  `json:"is_valid"`
+	Confidence              flexibleFloat `json:"confidence"`
+	Reason                  string        `json:"reason"`
+	ExploitationFeasibility string        `json:"exploitation_feasibility"`
+	ZeroDayPotential        flexibleBool  `json:"zero_day_potential"`
+}
+
+type flexibleBool bool
+type flexibleFloat float64
+
+func (b *flexibleBool) UnmarshalJSON(raw []byte) error {
+	value := strings.ToLower(strings.Trim(strings.TrimSpace(string(raw)), `"`))
+	switch value {
+	case "true", "1", "yes":
+		*b = true
+	case "false", "0", "no", "", "null":
+		*b = false
+	default:
+		number, err := strconv.ParseFloat(value, 64)
+		if err == nil && (number == 0 || number == 1) {
+			*b = flexibleBool(number == 1)
+			return nil
+		}
+		if strings.HasPrefix(value, "none") || strings.HasPrefix(value, "false") || strings.HasPrefix(value, "no ") || strings.HasPrefix(value, "unlikely") {
+			*b = false
+			return nil
+		}
+		if strings.HasPrefix(value, "true") || strings.HasPrefix(value, "yes ") || strings.HasPrefix(value, "likely") {
+			*b = true
+			return nil
+		}
+		if err != nil || (number != 0 && number != 1) {
+			return fmt.Errorf("invalid boolean value %q", value)
+		}
+	}
+	return nil
+}
+
+func (f *flexibleFloat) UnmarshalJSON(raw []byte) error {
+	value := strings.Trim(strings.TrimSpace(string(raw)), `"`)
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return fmt.Errorf("invalid numeric value %q", value)
+	}
+	*f = flexibleFloat(parsed)
+	return nil
 }
 
 func (a *AIValidationAgent) ValidateFindingsInBatch(ctx context.Context, in []models.Finding) ([]models.Finding, error) {
@@ -114,17 +156,18 @@ func (a *AIValidationAgent) validateBatch(ctx context.Context, in []models.Findi
 	out := append([]models.Finding(nil), in...)
 	seen := map[int]bool{}
 	for _, v := range vs {
-		if v.FindingIndex < 0 || v.FindingIndex >= len(out) || seen[v.FindingIndex] || v.Confidence < 0 || v.Confidence > 1 {
+		confidence := float64(v.Confidence)
+		if v.FindingIndex < 0 || v.FindingIndex >= len(out) || seen[v.FindingIndex] || confidence < 0 || confidence > 1 {
 			continue
 		}
 		seen[v.FindingIndex] = true
-		if !v.IsValid {
-			v.Confidence = 0
+		if !bool(v.IsValid) {
+			confidence = 0
 		}
 		f := &out[v.FindingIndex]
-		f.AIConfidence = v.Confidence
+		f.AIConfidence = confidence
 		f.AIAnalysis = v.Reason + " Exploitation feasibility: " + v.ExploitationFeasibility
-		f.IsZeroDay = v.ZeroDayPotential
+		f.IsZeroDay = bool(v.ZeroDayPotential)
 	}
 	return out, nil
 }
@@ -162,7 +205,7 @@ func buildLanguageAwarePrompt(in []models.Finding) string {
 		indexes := groups[lang]
 		fmt.Fprintf(&b, "- %s (finding indexes %v): focus on %s.\n", lang, indexes, contexts[lang])
 	}
-	b.WriteString("Return ONLY a JSON array with keys finding_index, is_valid, confidence, reason, exploitation_feasibility, zero_day_potential. Preserve the original finding indexes and do not use markdown. Findings:\n")
+	b.WriteString("Return ONLY a JSON array with keys finding_index, is_valid, confidence, reason, exploitation_feasibility, zero_day_potential. is_valid and zero_day_potential MUST be JSON boolean literals true or false, never numbers or explanatory text. confidence MUST be a number from 0 to 1. Preserve the original finding indexes and do not use markdown. Findings:\n")
 	payload, _ := json.Marshal(in)
 	b.Write(payload)
 	return b.String()

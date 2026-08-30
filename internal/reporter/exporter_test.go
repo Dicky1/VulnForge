@@ -32,3 +32,18 @@ func TestExportFormats(t *testing.T) {
 		t.Fatalf("invalid SARIF")
 	}
 }
+
+func TestExportBountyBundle(t *testing.T) {
+	dir := t.TempDir()
+	r := models.Report{BountyBundle: &models.BountyBundle{Target: "project", BlockedCount: 1, Reports: []models.BugBountyReport{{ID: "f1", Platform: "hackerone", Title: "Specific issue in endpoint affects access", Severity: "HIGH", AffectedEndpoint: "<NOT_ESTABLISHED_FROM_STATIC_ANALYSIS>", Scope: models.ScopeAssessment{Status: "unknown"}, BlockingReasons: []string{"runtime evidence required"}}}}}
+	path := filepath.Join(dir, "report.bounty.json")
+	if err := NewReportExporter().ExportBountyBundle(r, path); err != nil {
+		t.Fatal(err)
+	}
+	for _, ext := range []string{".json", ".md", ".txt", ".html", ".pdf"} {
+		file := filepath.Join(dir, "report.bounty"+ext)
+		if info, err := os.Stat(file); err != nil || info.Size() == 0 {
+			t.Fatalf("missing %s", file)
+		}
+	}
+}

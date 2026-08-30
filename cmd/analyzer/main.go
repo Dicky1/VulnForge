@@ -33,8 +33,8 @@ import (
 )
 
 type options struct {
-	target, output, formats, policy, dastURL, containerImage, sbomFormat, compareID, dbPath string
-	track, githubActions, gitlabCI, jenkins, preCommit                                      bool
+	target, output, formats, policy, dastURL, containerImage, sbomFormat, compareID, dbPath, bountyProgram string
+	track, githubActions, gitlabCI, jenkins, preCommit                                                     bool
 }
 type validationClient interface {
 	ValidateFindings(context.Context, string) (string, error)
@@ -61,7 +61,7 @@ func parseOptions(args []string) (options, error) {
 	fs.SetOutput(os.Stderr)
 	fs.StringVar(&o.target, "target", "", "source directory to scan")
 	fs.StringVar(&o.output, "output", "", "base report output path")
-	fs.StringVar(&o.formats, "export-format", "", "comma-separated: json,html,pdf,sarif,xml,csv")
+	fs.StringVar(&o.formats, "export-format", "", "comma-separated: json,html,dashboard,pdf,sarif,xml,csv,bounty-report")
 	fs.StringVar(&o.policy, "policy", "", "policy YAML path")
 	fs.StringVar(&o.dastURL, "dast-url", "", "authorized runtime URL for passive DAST")
 	fs.BoolVar(&o.track, "track-history", false, "save report in SQLite history")
@@ -69,6 +69,7 @@ func parseOptions(args []string) (options, error) {
 	fs.StringVar(&o.containerImage, "scan-containers", "", "explicit Docker/OCI image reference")
 	fs.StringVar(&o.sbomFormat, "generate-sbom", "", "generate cyclonedx or spdx SBOM")
 	fs.StringVar(&o.compareID, "compare-with", "", "historical report ID to compare")
+	fs.StringVar(&o.bountyProgram, "bounty-program", "", "bounty program name, handle, or platform adapter")
 	fs.BoolVar(&o.githubActions, "github-actions", false, "generate GitHub Actions workflow")
 	fs.BoolVar(&o.gitlabCI, "gitlab-ci", false, "generate GitLab CI configuration")
 	fs.BoolVar(&o.jenkins, "jenkins", false, "generate Jenkinsfile")
@@ -86,6 +87,16 @@ func parseOptions(args []string) (options, error) {
 }
 
 func run(ctx context.Context, logger *log.Logger, args []string) error {
+	envPath := os.Getenv("ANALYZER_ENV_FILE")
+	if envPath == "" {
+		envPath = ".env"
+	}
+	if err := config.LoadEnvFile(envPath); err != nil {
+		return fmt.Errorf("load environment: %w", err)
+	}
+	if err := config.PrepareToolPath(); err != nil {
+		return fmt.Errorf("prepare tool path: %w", err)
+	}
 	o, err := parseOptions(args)
 	if err != nil {
 		return err
@@ -150,7 +161,10 @@ func run(ctx context.Context, logger *log.Logger, args []string) error {
 		return fmt.Errorf("detect languages: %w", err)
 	}
 	logger.Printf("detected languages: %s", summarizeLanguages(languages))
-	setup := &agent.SetupAgent{Timeout: time.Duration(cfg.SAST.Timeout) * time.Second, AllowInstall: os.Getenv("ANALYZER_AUTO_INSTALL") == "1", Logger: logger}
+	autoInstall := config.EnvBool("ANALYZER_AUTO_INSTALL", false)
+	aiEnabled := config.EnvBool("ANALYZER_AI_ENABLED", cfg.Validator.EnableAI)
+	logger.Printf("environment ready: auto-install=%t ai-enabled=%t ai-provider=%s", autoInstall, aiEnabled, effectiveAIProvider(cfg))
+	setup := &agent.SetupAgent{Timeout: time.Duration(cfg.SAST.Timeout) * time.Second, AllowInstall: autoInstall, Logger: logger}
 	if parsed, e := setup.ParseREADME(filepath.Join(target, "README.md")); e == nil {
 		if e = setup.AutoInstallAndRun(ctx, parsed); e != nil {
 			logger.Printf("README setup skipped: %v", e)
@@ -158,7 +172,7 @@ func run(ctx context.Context, logger *log.Logger, args []string) error {
 	}
 	var findings []models.Finding
 	if cfg.SAST.Enabled {
-		sast := &agent.SASTAgent{Timeout: time.Duration(cfg.SAST.Timeout) * time.Second, Logger: logger, MaxWorkers: cfg.Validator.MaxWorkers, AutoInstall: os.Getenv("ANALYZER_AUTO_INSTALL") == "1"}
+		sast := &agent.SASTAgent{Timeout: time.Duration(cfg.SAST.Timeout) * time.Second, Logger: logger, MaxWorkers: cfg.Validator.MaxWorkers, AutoInstall: autoInstall}
 		findings, err = sast.RunMultiLanguageSASTScan(ctx, target, languages)
 		if err != nil {
 			logger.Printf("SAST degraded: %v", err)
@@ -208,7 +222,7 @@ func run(ctx context.Context, logger *log.Logger, args []string) error {
 	}
 	tokenUsed := 0
 	var aiClient validationClient
-	if cfg.Validator.EnableAI && len(findings) > 0 {
+	if aiEnabled && len(findings) > 0 {
 		client, e := newAIClient(ctx, cfg)
 		if e != nil {
 			logger.Printf("AI validation disabled: %v", e)
@@ -295,8 +309,26 @@ func run(ctx context.Context, logger *log.Logger, args []string) error {
 			return e
 		}
 	}
-	sort.SliceStable(findings, func(i, j int) bool { return rank(findings[i].Severity) > rank(findings[j].Severity) })
-	report := models.Report{ID: fmt.Sprintf("scan-%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(), TargetPath: target, Language: summarizeLanguages(languages), Findings: findings, ZeroDayFindings: zeros, TotalFindings: len(findings), TokenUsed: tokenUsed, Duration: time.Since(started).String(), ComplianceReports: complianceReports}
+	var businessReport *models.BusinessReport
+	if cfg.Reporter.EnableBusinessImpact {
+		businessContext := models.BusinessContext{BusinessType: cfg.BusinessContext.BusinessType, AnnualRevenue: cfg.BusinessContext.AnnualRevenue, NumUsers: cfg.BusinessContext.NumUsers, AverageUserValue: cfg.BusinessContext.AverageUserValue, GeographicScope: cfg.BusinessContext.GeographicScope, PrimaryCompliance: cfg.BusinessContext.PrimaryCompliance, Multipliers: cfg.FinancialMultipliers, Penalties: cfg.CompliancePenalties}
+		businessReport = reporter.BuildBusinessReport(findings, businessContext, reporter.BusinessReportOptions{EnablePOC: cfg.Reporter.EnablePOCGeneration, EnableRoadmap: cfg.Reporter.EnableRemediationRoadmap, POCSkillLevel: cfg.Reporter.POCSkillLevel})
+		priority := map[string]int{}
+		for _, finding := range businessReport.Findings {
+			priority[finding.FindingID] = finding.PriorityScore
+		}
+		sort.SliceStable(findings, func(i, j int) bool { return priority[findings[i].ID] < priority[findings[j].ID] })
+	} else {
+		sort.SliceStable(findings, func(i, j int) bool { return rank(findings[i].Severity) > rank(findings[j].Severity) })
+	}
+	var bountyBundle *models.BountyBundle
+	if cfg.BugBounty.Enabled {
+		platform, programName := bountySelection(o.bountyProgram)
+		bountyReporter := reporter.BugBountyReporter{Options: reporter.BountyReporterOptions{Platform: platform, ProgramName: programName, Target: target, Programs: cfg.BugBounty.BountyPrograms, POCFormats: cfg.BugBounty.IncludePOCFormats, MinSeverity: parseSeverity(cfg.BugBounty.SubmissionQualityChecks.MinSeverityLevel)}}
+		bundle := bountyReporter.BuildBundle(findings, businessReport)
+		bountyBundle = &bundle
+	}
+	report := models.Report{ID: fmt.Sprintf("scan-%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(), TargetPath: target, Language: summarizeLanguages(languages), Findings: findings, ZeroDayFindings: zeros, TotalFindings: len(findings), TokenUsed: tokenUsed, Duration: time.Since(started).String(), ComplianceReports: complianceReports, BusinessReport: businessReport, BountyBundle: bountyBundle}
 	for _, f := range findings {
 		if f.Severity == models.SeverityCritical {
 			report.CriticalCount++
@@ -342,10 +374,7 @@ func run(ctx context.Context, logger *log.Logger, args []string) error {
 }
 
 func newAIClient(ctx context.Context, cfg config.Config) (validationClient, error) {
-	provider := strings.ToLower(strings.TrimSpace(os.Getenv("ANALYZER_AI_PROVIDER")))
-	if provider == "" {
-		provider = strings.ToLower(strings.TrimSpace(cfg.AI.Provider))
-	}
+	provider := effectiveAIProvider(cfg)
 	switch provider {
 	case "9router", "nine-router", "ninerouter":
 		key := os.Getenv("NINEROUTER_KEY")
@@ -379,6 +408,14 @@ func newAIClient(ctx context.Context, cfg config.Config) (validationClient, erro
 	default:
 		return nil, fmt.Errorf("unsupported AI provider %q", provider)
 	}
+}
+
+func effectiveAIProvider(cfg config.Config) string {
+	provider := strings.ToLower(strings.TrimSpace(os.Getenv("ANALYZER_AI_PROVIDER")))
+	if provider == "" {
+		provider = strings.ToLower(strings.TrimSpace(cfg.AI.Provider))
+	}
+	return provider
 }
 
 func generateIntegrations(target string, o options, cfg config.Config) error {
@@ -424,9 +461,37 @@ func outputForFormat(path, format string) string {
 	ext := "." + format
 	if format == "sarif" {
 		ext = ".sarif"
+	} else if format == "dashboard" {
+		ext = ".dashboard.html"
+	} else if format == "bounty-report" {
+		ext = ".bounty.json"
 	}
 	base := strings.TrimSuffix(path, filepath.Ext(path))
 	return base + ext
+}
+
+func bountySelection(value string) (string, string) {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	switch lower {
+	case "hackerone", "bugcrowd", "intigriti", "yeswehack", "federacy":
+		return lower, ""
+	case "":
+		return "hackerone", ""
+	default:
+		return "", value
+	}
+}
+func parseSeverity(value string) models.Severity {
+	switch strings.ToLower(value) {
+	case "critical":
+		return models.SeverityCritical
+	case "high":
+		return models.SeverityHigh
+	case "low":
+		return models.SeverityLow
+	default:
+		return models.SeverityMedium
+	}
 }
 func containsFinding(v []models.Finding, id string) bool {
 	for _, f := range v {

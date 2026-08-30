@@ -203,17 +203,3 @@ Target documentation may be inspected for scanner installation hints when automa
 5. The JSON report includes CVSS estimates, CWE/MITRE mapping, remediation, AI rationale, confidence, and possible exploit-chain links.
 
 The AI stage sends finding metadata and code snippets to the selected provider. When using 9Router, its configured upstream provider may receive that content. Do not enable AI validation for source prohibited by your data-handling policy. Model-generated assessments may be incorrect.
-
-## Verification
-
-Before pushing to GitHub, run:
-
-```powershell
-gofmt -l .
-go test ./...
-go vet ./...
-go build -o analyzer.exe ./cmd/analyzer
-git diff --check
-```
-
-`gofmt -l .` should print nothing. Also inspect `git status` and `git diff`, confirm that no `.env`, API key, generated report, local database, or target source snippet is staged, and publish release binaries through GitHub Releases instead of committing them to the source tree.

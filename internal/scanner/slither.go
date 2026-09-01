@@ -15,34 +15,34 @@ import (
 // SlitherScanner runs the Slither static analyzer for Solidity projects.
 type SlitherScanner struct{}
 
-func NewSlitherScanner() *SlitherScanner  { return &SlitherScanner{} }
-func (*SlitherScanner) Name() string      { return "slither" }
-func (*SlitherScanner) Language() string  { return "solidity" }
-func (*SlitherScanner) IsInstalled() bool { return installed("slither") }
+func NewSlitherScanner() *SlitherScanner { return &SlitherScanner{} }
+func (*SlitherScanner) Name() string     { return "slither" }
+func (*SlitherScanner) Language() string { return "solidity" }
+func (*SlitherScanner) IsInstalled() bool {
+	return installed("slither") || SandboxAvailableFor("slither")
+}
 func (*SlitherScanner) Install(ctx context.Context) error {
 	return installCommand(ctx, "python", "-m", "pip", "install", "slither-analyzer")
 }
 
 func (s *SlitherScanner) Scan(ctx context.Context, target string, _ *models.ScanConfig) (*models.ToolOutput, error) {
-	if _, err := os.Stat(filepath.Join(target, "foundry.toml")); err == nil && !installed("forge") {
+	sandboxed := SandboxAvailableFor(s.Name())
+	if foundryNeedsHostForge(target, sandboxed) && !installed("forge") {
 		return &models.ToolOutput{Tool: s.Name(), ExitCode: -1}, errors.New("Foundry project requires forge on PATH; install Foundry and run forge --version")
 	}
-	f, err := os.CreateTemp("", "analyzer-slither-*.json")
+	// A dedicated, freshly created directory rather than the shared temp
+	// root: when sandboxed, this whole directory is bind-mounted read-write
+	// into the container, so it must contain nothing but this run's output.
+	outDir, err := os.MkdirTemp("", "analyzer-slither-out-*")
 	if err != nil {
-		return nil, fmt.Errorf("create Slither output: %w", err)
+		return nil, fmt.Errorf("create Slither output dir: %w", err)
 	}
-	jsonPath := f.Name()
-	if err := f.Close(); err != nil {
-		return nil, fmt.Errorf("close Slither output: %w", err)
-	}
-	// Slither refuses to overwrite an existing JSON file. CreateTemp gives us a
-	// collision-resistant path, then the scanner itself creates the file.
-	if err := os.Remove(jsonPath); err != nil {
-		return nil, fmt.Errorf("prepare Slither output: %w", err)
-	}
-	defer os.Remove(jsonPath)
+	defer os.RemoveAll(outDir)
+	// Slither refuses to overwrite an existing JSON file, so name the path
+	// without pre-creating it.
+	jsonPath := filepath.Join(outDir, "result.json")
 
-	r, err := run(ctx, multiScannerTimeout, target, "slither", ".", "--json", jsonPath)
+	r, err := s.run(ctx, target, jsonPath)
 	if err != nil {
 		return output(s.Name(), r, nil), err
 	}
@@ -58,6 +58,28 @@ func (s *SlitherScanner) Scan(ctx context.Context, target string, _ *models.Scan
 	o := output(s.Name(), r, findings)
 	o.RawJSON = raw
 	return o, parseErr
+}
+
+// foundryNeedsHostForge reports whether Scan will need `forge` on the host
+// PATH for target: only Foundry-based projects need it at all, and only when
+// the scan won't run sandboxed — a sandboxed slither image already bundles
+// forge, so a missing host installation isn't a reason to refuse.
+func foundryNeedsHostForge(target string, sandboxed bool) bool {
+	if sandboxed {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(target, "foundry.toml"))
+	return err == nil
+}
+
+// run prefers the sandboxed slither image (which also needs the output
+// directory bind-mounted, unlike the other scanners behind run()/runWithEnv)
+// and falls back to local execution when sandboxing isn't available.
+func (s *SlitherScanner) run(ctx context.Context, target, jsonPath string) (commandResult, error) {
+	if res, ranSandboxed, err := RunScannerSandboxedWithOutput(ctx, multiScannerTimeout, target, jsonPath, nil, s.Name(), ".", "--json", jsonPath); ranSandboxed {
+		return res, err
+	}
+	return run(ctx, multiScannerTimeout, target, s.Name(), ".", "--json", jsonPath)
 }
 
 func (*SlitherScanner) ParseOutput(raw []byte) ([]models.Finding, error) {

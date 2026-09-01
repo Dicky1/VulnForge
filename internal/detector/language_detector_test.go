@@ -86,3 +86,17 @@ func TestGradleKotlinScriptDoesNotImplyKotlinSource(t *testing.T) {
 		t.Fatalf("Kotlin source not detected: %#v, %v", got, err)
 	}
 }
+
+// A .NET-only or Swift-only project used to be detected but planned with zero
+// scanners, since neither language had a catalog entry.
+func TestDotnetAndSwiftGetAScannerRecommendation(t *testing.T) {
+	root := t.TempDir()
+	languages := map[string]LanguageInfo{"dotnet": {Name: "dotnet"}, "swift": {Name: "swift"}}
+	tools := NewLanguageDetector(root).GetRecommendedToolsForLanguages(languages)
+	if len(tools["dotnet"]) == 0 {
+		t.Fatalf("expected at least one scanner recommended for dotnet, got %#v", tools["dotnet"])
+	}
+	if len(tools["swift"]) == 0 {
+		t.Fatalf("expected at least one scanner recommended for swift, got %#v", tools["swift"])
+	}
+}

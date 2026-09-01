@@ -16,9 +16,16 @@ type legacyAdapter struct {
 	install                func(context.Context) error
 }
 
-func (a *legacyAdapter) Name() string      { return a.name }
-func (a *legacyAdapter) Language() string  { return a.language }
-func (a *legacyAdapter) IsInstalled() bool { return installed(a.binary) }
+func (a *legacyAdapter) Name() string     { return a.name }
+func (a *legacyAdapter) Language() string { return a.language }
+
+// IsInstalled treats the tool as available either because its binary is on
+// the host PATH, or because a sandboxed Docker image is configured and ready
+// for it — Scan() (via runWithEnv) will prefer the sandboxed image when both
+// are true, so a missing host binary is not a reason to skip the scanner.
+func (a *legacyAdapter) IsInstalled() bool {
+	return installed(a.binary) || SandboxAvailableFor(a.binary)
+}
 func (a *legacyAdapter) Scan(ctx context.Context, target string, _ *models.ScanConfig) (*models.ToolOutput, error) {
 	o, e := a.scan(ctx, target)
 	for i := range o.Findings {

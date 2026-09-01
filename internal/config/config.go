@@ -147,6 +147,15 @@ type Config struct {
 		Enable     bool     `yaml:"enable"`
 		FocusAreas []string `yaml:"focus_areas"`
 	} `yaml:"zerodaydetection"`
+	Sandbox struct {
+		Enabled        bool              `yaml:"enabled"`
+		NetworkDefault string            `yaml:"network_default"`
+		Memory         string            `yaml:"memory"`
+		CPUs           string            `yaml:"cpus"`
+		PIDsLimit      int               `yaml:"pids_limit"`
+		Images         map[string]string `yaml:"images"`
+		NetworkAllow   []string          `yaml:"network_allow"`
+	} `yaml:"sandbox"`
 }
 
 func Default() Config {
@@ -202,6 +211,18 @@ func Default() Config {
 	c.Optimizer.SkipPatterns = []string{"TODO", "debug", `test.*password`, "fixture"}
 	c.ZeroDayDetection.Enable = true
 	c.ZeroDayDetection.FocusAreas = []string{"crypto", "validation", "authorization", "logic", "race_conditions"}
+	c.Sandbox.Enabled = false // opt-in: existing behavior/performance is unchanged until Docker sandboxing is turned on
+	c.Sandbox.NetworkDefault = "none"
+	c.Sandbox.Memory = "1g"
+	c.Sandbox.CPUs = "2"
+	c.Sandbox.PIDsLimit = 256
+	c.Sandbox.Images = map[string]string{
+		"semgrep": "returntocorp/semgrep:1.78.0",
+		"bandit":  "vulnforge/bandit-sandbox:1.7.9",
+		"gosec":   "vulnforge/gosec-sandbox:2.20.0",
+		"slither": "vulnforge/slither-sandbox:0.10.4",
+	}
+	c.Sandbox.NetworkAllow = []string{"cargo-audit", "dependency-check"}
 	return c
 }
 

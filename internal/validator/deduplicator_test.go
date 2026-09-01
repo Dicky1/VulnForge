@@ -12,3 +12,14 @@ func TestDeduplicateKeepsHigherCVSS(t *testing.T) {
 		t.Fatalf("got %#v", got)
 	}
 }
+
+func TestDeduplicateKeepsDistinctLinesWithSameCWE(t *testing.T) {
+	in := []models.Finding{
+		{ID: "a", CWE: "CWE-89", FilePath: "x.go", LineNumber: 10, CVSSBase: 7},
+		{ID: "b", CWE: "CWE-89", FilePath: "x.go", LineNumber: 42, CVSSBase: 7},
+	}
+	got := Deduplicate(in)
+	if len(got) != 2 {
+		t.Fatalf("expected two distinct findings on different lines to survive, got %#v", got)
+	}
+}

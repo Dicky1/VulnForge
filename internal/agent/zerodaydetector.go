@@ -99,12 +99,14 @@ func sourceLanguage(path string) string {
 		return "swift"
 	case ".kt", ".kts":
 		return "kotlin"
+	case ".sol":
+		return "solidity"
 	}
 	return "unknown"
 }
 func sourceExt(e string) bool {
 	switch strings.ToLower(e) {
-	case ".go", ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".rb", ".php", ".cs", ".c", ".cpp", ".rs":
+	case ".go", ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".rb", ".php", ".cs", ".c", ".cpp", ".rs", ".sol", ".kt", ".kts", ".swift":
 		return true
 	}
 	return false

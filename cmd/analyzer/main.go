@@ -105,6 +105,15 @@ func run(ctx context.Context, logger *log.Logger, args []string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	scanner.ConfigureSandbox(scanner.SandboxConfig{
+		Enabled:        config.EnvBool("ANALYZER_SANDBOX_ENABLED", cfg.Sandbox.Enabled),
+		NetworkDefault: cfg.Sandbox.NetworkDefault,
+		Memory:         cfg.Sandbox.Memory,
+		CPUs:           cfg.Sandbox.CPUs,
+		PIDsLimit:      cfg.Sandbox.PIDsLimit,
+		Images:         cfg.Sandbox.Images,
+		NetworkAllow:   toSet(cfg.Sandbox.NetworkAllow),
+	})
 	if o.target == "" {
 		o.target = cfg.Analyzer.TargetPath
 	}
@@ -512,6 +521,13 @@ func rank(s models.Severity) int {
 	default:
 		return 1
 	}
+}
+func toSet(v []string) map[string]bool {
+	out := make(map[string]bool, len(v))
+	for _, s := range v {
+		out[s] = true
+	}
+	return out
 }
 func summarizeLanguages(languages map[string]detector.LanguageInfo) string {
 	names := make([]string, 0, len(languages))

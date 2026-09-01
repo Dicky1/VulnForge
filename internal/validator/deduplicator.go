@@ -10,7 +10,7 @@ func Deduplicate(in []models.Finding) []models.Finding {
 	seen := map[string]int{}
 	out := make([]models.Finding, 0, len(in))
 	for _, f := range in {
-		k := strings.ToLower(fmt.Sprintf("%s:%s", f.CWE, f.FilePath))
+		k := strings.ToLower(fmt.Sprintf("%s:%s:%d", f.CWE, f.FilePath, f.LineNumber))
 		if f.CWE == "" {
 			k = strings.ToLower(fmt.Sprintf("%s:%s:%d", f.Title, f.FilePath, f.LineNumber))
 		}

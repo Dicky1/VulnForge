@@ -25,3 +25,21 @@ func TestSecretDetectorRedacts(t *testing.T) {
 		t.Fatal("secret leaked into finding")
 	}
 }
+
+// .sol files used to be skipped entirely by secretExtension, hiding hardcoded
+// AWS-style credentials embedded in Solidity source (e.g. deployment scripts).
+func TestSecretDetectorScansSolidityFiles(t *testing.T) {
+	root := t.TempDir()
+	secret := "AKIA1234567890ABCDEF"
+	body := "// SPDX-License-Identifier: MIT\ncontract Deployer {\n    string constant KEY = \"" + secret + "\";\n}\n"
+	if err := os.WriteFile(filepath.Join(root, "Deployer.sol"), []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := NewSecretDetector().Scan(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected the secret in the .sol file to be detected, got %d findings", len(got))
+	}
+}

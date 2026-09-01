@@ -73,7 +73,15 @@ Copy-Item .env.example .env
 
 With `ANALYZER_AUTO_INSTALL=true`, the environment manager attempts to install supported missing scanners. The relevant package manager or toolchain must already exist; for example, Cargo must be installed before `cargo-audit` can be installed. Set `ANALYZER_AI_ENABLED=false` for a scanner-only run. Existing shell variables override `.env`. Set `ANALYZER_ENV_FILE` to use another environment file. Platform toolchains such as Foundry/`forge` and LLVM still need to be installed through their official installers; common per-user locations such as `~/.foundry/bin` are discovered automatically.
 
-Keep `ANALYZER_AUTO_INSTALL=false` when scanning repositories you do not fully trust. The analyzer may inspect installation hints in target documentation, so enable automatic installation only for trusted targets and preferably inside an isolated environment.
+Keep `ANALYZER_AUTO_INSTALL=false` when scanning repositories you do not fully trust. The analyzer inspects installation hints in the target's own README to decide what to auto-install — that content is untrusted. Every recognized line is re-validated against a strict allowlist (see "Sandboxed scanning" below) and is never executed on the host: with `ANALYZER_AUTO_INSTALL=true`, it only proceeds when the corresponding tool is available through a sandboxed Docker image, and refuses otherwise rather than falling back to a local install.
+
+## Sandboxed scanning
+
+By default, scanners run directly on the host, with their working directory set to the (untrusted) target repository. Several of them execute code or configuration that lives inside that repo — ESLint plugins, PHPStan/Psalm bootstrap files, Cargo build scripts via `cargo audit`, Foundry `forge` via Slither, `clang`/`scan-build` compiling the target's own build. Set `sandbox.enabled: true` in `config/config.yaml` (or `ANALYZER_SANDBOX_ENABLED=true`) to run scanners that have a configured Docker image inside a locked-down container instead: read-only mount of the target, `--network none` by default, dropped capabilities, no privilege escalation, and resource limits. Requires Docker.
+
+Today, images are configured for **semgrep, bandit, gosec, and slither** (`sandbox.images` in `config/config.yaml`; semgrep uses the official `returntocorp/semgrep` image, the other three have first-party Dockerfiles under `docker/sandbox/`). Any other scanner without a configured image still runs locally, unsandboxed, exactly as before — this is a deliberate, incremental rollout, not a claim that every scanner is isolated. None of these images have been built or run against a real Docker daemon while developing this feature; verify them yourself (`docker/sandbox/README.md`) before relying on them. See that same file to add coverage for another scanner.
+
+The README-driven auto-install feature (above) is the one place a string parsed out of the *target* repository reaches process execution, so it has no local fallback at all: with sandboxing unavailable, `ANALYZER_AUTO_INSTALL=true` simply skips that tool rather than installing it on the host.
 
 ## AI provider: Anthropic or 9Router
 
@@ -192,7 +200,7 @@ On Linux/macOS, install package-manager-based scanners with:
 bash tools/install_dependencies.sh
 ```
 
-Target documentation may be inspected for scanner installation hints when automatic installation is enabled. Treat this as execution of third-party dependency installation instructions: use it only with trusted repositories, review the console output, and prefer a disposable VM or container.
+Target documentation may be inspected for scanner installation hints when automatic installation is enabled. As described under "Sandboxed scanning" above, this no longer executes anything on the host: it only confirms the referenced tool (semgrep, bandit, or gosec) is available via its sandboxed Docker image, and skips it otherwise. Still review the console output, and remember that scanners without a configured sandbox image run unsandboxed on the host as before — prefer a disposable VM or container for those when the target repository isn't fully trusted.
 
 ## How the pipeline works
 

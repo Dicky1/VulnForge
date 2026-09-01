@@ -20,8 +20,12 @@ var (
 		name string
 		re   *regexp.Regexp
 	}{
-		{"semgrep", regexp.MustCompile(`(?i)^\s*(?:python\s+-m\s+)?pip3?\s+install\s+[^#]*(?:semgrep)[^#]*$`)},
-		{"bandit", regexp.MustCompile(`(?i)^\s*(?:python\s+-m\s+)?pip3?\s+install\s+[^#]*(?:bandit)[^#]*$`)},
+		// The install line must be pip install <exact package>[extras][==version] and
+		// nothing else — a wildcard like [^#]* here would let a malicious target
+		// README smuggle an extra, attacker-chosen package name onto the same pip
+		// invocation (e.g. "pip install evil-package semgrep").
+		{"semgrep", regexp.MustCompile(`(?i)^\s*(?:python\s+-m\s+)?pip3?\s+install\s+(?:--upgrade\s+|-U\s+)?semgrep(?:==[\w.\-]+)?\s*$`)},
+		{"bandit", regexp.MustCompile(`(?i)^\s*(?:python\s+-m\s+)?pip3?\s+install\s+(?:--upgrade\s+|-U\s+)?bandit(?:\[[\w,]+\])?(?:==[\w.\-]+)?\s*$`)},
 		{"gosec", regexp.MustCompile(`(?i)^\s*go\s+install\s+github\.com/securego/gosec/v2/cmd/gosec(?:@\S+)?\s*$`)},
 	}
 	envPattern    = regexp.MustCompile(`^\s*(?:export\s+|ENV\s+)([A-Za-z_][A-Za-z0-9_]*)=(?:"([^"]*)"|'([^']*)'|(\S+))\s*$`)

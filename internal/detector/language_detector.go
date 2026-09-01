@@ -93,7 +93,7 @@ func (ld *LanguageDetector) DetectLanguages() (map[string]LanguageInfo, error) {
 }
 
 func (ld *LanguageDetector) GetRecommendedToolsForLanguages(languages map[string]LanguageInfo) map[string][]string {
-	catalog := map[string][]string{"go": {"gosec"}, "python": {"bandit", "semgrep"}, "javascript": {"eslint", "semgrep"}, "java": {"spotbugs", "dependency-check", "semgrep"}, "php": {"phpstan", "psalm", "semgrep"}, "rust": {"cargo-audit", "semgrep"}, "ruby": {"brakeman"}, "cpp": {"clang-analyzer"}, "kotlin": {"semgrep"}, "solidity": {"slither"}}
+	catalog := map[string][]string{"go": {"gosec"}, "python": {"bandit", "semgrep"}, "javascript": {"eslint", "semgrep"}, "java": {"spotbugs", "dependency-check", "semgrep"}, "php": {"phpstan", "psalm", "semgrep"}, "rust": {"cargo-audit", "semgrep"}, "ruby": {"brakeman"}, "cpp": {"clang-analyzer"}, "kotlin": {"semgrep"}, "solidity": {"slither"}, "dotnet": {"semgrep"}, "swift": {"semgrep"}}
 	out := map[string][]string{}
 	for lang := range languages {
 		out[lang] = append([]string(nil), catalog[lang]...)

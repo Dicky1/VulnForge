@@ -1,9 +1,72 @@
 ai:
-  provider: "anthropic" # anthropic atau 9router
+  provider: "9router" # anthropic atau 9router
+bug_bounty:
+  enabled: true
+  generate_ready_to_submit: true
+  submission_templates:
+    hackerone: true
+    bugcrowd: true
+    intigriti: true
+    yeswehack: true
+    federacy: true
+  include_poc_formats: [curl, python, raw_http, javascript]
+  severity_mapping:
+    critical: "Critical"
+    high: "High"
+    medium: "Medium"
+    low: "Low"
+  bounty_programs: []
+  submission_quality_checks:
+    validate_title: true
+    validate_steps: true
+    validate_poc: true
+    check_duplicates: true
+    check_scope: true
+    min_severity_level: "medium"
+  export_formats: [json, markdown, html, pdf, plaintext]
+reporter:
+  enable_business_impact: true
+  enable_poc_generation: true
+  enable_remediation_roadmap: true
+  poc_skill_level: "intermediate"
+business_context:
+  business_type: "fintech"
+  annual_revenue: 10000000000
+  num_users: 1000000
+  average_user_value: 5000000
+  geographic_scope: "indonesia"
+  primary_compliance: [gdpr, pci-dss]
+financial_multipliers:
+  fintech: 10
+  payment-gateway: 100
+  payment: 100
+  ecommerce: 2
+  marketplace: 1.5
+  saas: 1
+  other: 1
+compliance_penalties:
+  gdpr: 0.04
+  pci-dss: 100000
+  hipaa: 50000
+  ccpa: 7500
+remediation_effort:
+  - type: "config_change"
+    hours: 0.5
+  - type: "code_change"
+    hours: 4
+  - type: "architecture_change"
+    hours: 16
+timeline_definition:
+  immediate: 24
+  week1: 7
+  week2: 14
+  month1: 30
+  month2: 60
+  month3_plus: 999
 ninerouter:
   base_url: "http://localhost:20128"
-  api_key: "" # Prefer NINEROUTER_KEY; optional if local auth is disabled.
-  model: "" # Required when provider=9router; get IDs from /v1/models.
+  api_key: "" # Prefer NINEROUTER_KEY; optional if local auth is disabled. Never commit a real key here.
+  model: "GoRouter/claude-opus-5-thinking" # Required when provider=9router; get IDs from /v1/models.
   max_retries: 3
   timeout_seconds: 60
   health_check: true
@@ -74,3 +137,20 @@ optimizer:
 zerodaydetection:
   enable: true
   focus_areas: [crypto, validation, authorization, logic, race_conditions]
+sandbox:
+  # Opt-in: when true, scanners with a configured image below run inside a
+  # locked-down, read-only, network-isolated Docker container instead of
+  # directly on the host against the (untrusted) scanned repository. Requires
+  # Docker; scanners without a configured image still run locally as before.
+  # See docker/sandbox/README.md to build/extend the images.
+  enabled: false
+  network_default: "none"
+  memory: "1g"
+  cpus: "2"
+  pids_limit: 256
+  images:
+    semgrep: "returntocorp/semgrep:1.78.0"
+    bandit: "vulnforge/bandit-sandbox:1.7.9"
+    gosec: "vulnforge/gosec-sandbox:2.20.0"
+    slither: "vulnforge/slither-sandbox:0.10.4"
+  network_allow: [cargo-audit, dependency-check]

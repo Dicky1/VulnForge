@@ -127,7 +127,7 @@ func secretSource(path string) bool {
 }
 func secretExtension(ext string) bool {
 	switch strings.ToLower(ext) {
-	case ".go", ".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".php", ".rb", ".rs", ".c", ".cc", ".cpp", ".h", ".hpp", ".cs", ".swift", ".kt", ".kts", ".sh", ".ps1":
+	case ".go", ".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".php", ".rb", ".rs", ".c", ".cc", ".cpp", ".h", ".hpp", ".cs", ".swift", ".kt", ".kts", ".sh", ".ps1", ".sol":
 		return true
 	}
 	return false

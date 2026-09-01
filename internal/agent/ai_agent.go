@@ -88,6 +88,7 @@ func (a *AIValidationAgent) ValidateFindingsInBatch(ctx context.Context, in []mo
 	}
 	type result struct {
 		start int
+		count int
 		items []models.Finding
 		err   error
 	}
@@ -100,7 +101,7 @@ func (a *AIValidationAgent) ValidateFindingsInBatch(ctx context.Context, in []mo
 			defer wg.Done()
 			for j := range jobs {
 				x, e := a.validateBatch(ctx, j.items)
-				results <- result{j.start, x, e}
+				results <- result{j.start, len(j.items), x, e}
 			}
 		}()
 	}
@@ -116,13 +117,18 @@ func (a *AIValidationAgent) ValidateFindingsInBatch(ctx context.Context, in []mo
 		wg.Wait()
 		close(results)
 	}()
-	validated := make([]models.Finding, len(in))
+	// Start from the original findings so a batch that errors out falls back
+	// to its unvalidated findings instead of silently dropping them.
+	validated := append([]models.Finding(nil), in...)
 	keep := make([]bool, len(in))
 	var first error
 	for r := range results {
 		if r.err != nil {
 			if first == nil {
 				first = r.err
+			}
+			for i := r.start; i < r.start+r.count && i < len(keep); i++ {
+				keep[i] = true
 			}
 			continue
 		}

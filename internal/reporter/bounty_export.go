@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/example/sast-dast-analyzer/internal/models"
-	"github.com/go-pdf/fpdf"
 )
 
 func (*ReportExporter) ExportBountyBundle(r models.Report, jsonPath string) error {
@@ -69,36 +68,77 @@ func exportBountyHTML(b models.BountyBundle, path string) error {
 	return bountyHTML.Execute(f, b)
 }
 func exportBountyPDF(b models.BountyBundle, path string) error {
-	pdf := fpdf.New("P", "mm", "A4", "")
-	pdf.SetTitle("Bug Bounty Submission Bundle", false)
+	pdf := newStyledPDF("Bug Bounty Submission Bundle")
 	pdf.AddPage()
 	pdf.SetFont("Arial", "B", 18)
-	pdf.Cell(0, 10, "Bug Bounty Submission Bundle")
-	pdf.Ln(13)
-	pdf.SetFont("Arial", "", 10)
-	pdf.MultiCell(0, 6, fmt.Sprintf("Target: %s\nReviewed: %d | Ready: %d | Blocked drafts: %d | Excluded: %d", b.Target, b.InputCount, b.ReadyCount, b.BlockedCount, len(b.Excluded)), "", "L", false)
+	pdf.CellFormat(0, 10, "Bug Bounty Submission Bundle", "", 1, "L", false, 0, "")
+	pdf.Ln(2)
+	metaRow(pdf, "Target", b.Target)
+	metaRow(pdf, "Reviewed", fmt.Sprintf("%d", b.InputCount))
+	metaRow(pdf, "Ready", fmt.Sprintf("%d", b.ReadyCount))
+	metaRow(pdf, "Blocked drafts", fmt.Sprintf("%d", b.BlockedCount))
+	metaRow(pdf, "Excluded", fmt.Sprintf("%d", len(b.Excluded)))
+
 	if len(b.Reports) == 0 {
-		pdf.Ln(5)
-		pdf.SetFont("Arial", "B", 13)
-		pdf.Cell(0, 8, "No eligible bounty candidates")
-		pdf.Ln(9)
+		sectionHeader(pdf, "No eligible bounty candidates")
 		pdf.SetFont("Arial", "", 9)
-		pdf.MultiCell(0, 5, "No finding passed the evidence, classification, ownership, and severity gates.", "1", "L", false)
+		pdf.MultiCell(0, 5, "No finding passed the evidence, classification, ownership, and severity gates. Review the exclusions below and collect runtime evidence before submission.", "", "L", false)
 	}
-	for _, x := range b.Excluded {
-		pdf.Ln(3)
-		pdf.SetFont("Arial", "B", 9)
-		pdf.MultiCell(0, 5, x.Title, "", "L", false)
-		pdf.SetFont("Arial", "", 8)
-		pdf.MultiCell(0, 4, x.SourceTool+": "+x.Reason, "1", "L", false)
+
+	if len(b.Excluded) > 0 {
+		sectionHeader(pdf, "Excluded findings")
+		for _, x := range b.Excluded {
+			pdf.SetFont("Arial", "B", 9)
+			pdf.MultiCell(0, 5, x.Title, "", "L", false)
+			pdf.SetFont("Arial", "", 8)
+			setTextColor(pdf, colorMuted)
+			pdf.MultiCell(0, 4.5, x.SourceTool+" - "+x.Reason, "", "L", false)
+			setTextColor(pdf, colorInk)
+			pdf.Ln(1)
+			divider(pdf)
+		}
 	}
+
 	for _, r := range b.Reports {
 		pdf.AddPage()
+		severityBadge(pdf, models.Severity(strings.ToLower(r.Severity)))
+		pdf.SetFont("Arial", "", 9)
+		setTextColor(pdf, colorMuted)
+		status := "Draft - blocked"
+		if r.ReadyToSubmit {
+			status = "Ready after final human review"
+		}
+		pdf.CellFormat(0, 5.5, "  "+r.Platform+"  |  "+status, "", 1, "L", false, 0, "")
+		setTextColor(pdf, colorInk)
 		pdf.SetFont("Arial", "B", 14)
 		pdf.MultiCell(0, 7, r.Title, "", "L", false)
+
+		metaRow(pdf, "Endpoint", r.AffectedEndpoint)
+		metaRow(pdf, "Scope", r.Scope.Status+" - "+r.Scope.Reason)
+
+		if len(r.BlockingReasons) > 0 {
+			sectionHeader(pdf, "Blocking reasons")
+			pdf.SetFont("Arial", "", 9)
+			for _, reason := range r.BlockingReasons {
+				pdf.MultiCell(0, 5, "- "+reason, "", "L", false)
+			}
+		}
+
+		sectionHeader(pdf, "Description")
 		pdf.SetFont("Arial", "", 9)
-		pdf.MultiCell(0, 5, fmt.Sprintf("Platform: %s | Severity: %s | Ready: %t\nEndpoint: %s\nScope: %s - %s\n\n%s\n\nImpact: %s\n\nRemediation: %s", r.Platform, r.Severity, r.ReadyToSubmit, r.AffectedEndpoint, r.Scope.Status, r.Scope.Reason, r.Description, r.Impact.SecurityImpact, strings.Join(r.Remediation, "; ")), "1", "L", false)
+		pdf.MultiCell(0, 5, r.Description, "", "L", false)
+
+		sectionHeader(pdf, "Impact")
+		pdf.SetFont("Arial", "", 9)
+		pdf.MultiCell(0, 5, r.Impact.SecurityImpact, "", "L", false)
+
+		sectionHeader(pdf, "Remediation")
+		pdf.SetFont("Arial", "", 9)
+		for _, fix := range r.Remediation {
+			pdf.MultiCell(0, 5, "- "+fix, "", "L", false)
+		}
 	}
+
 	if err := ensureDir(path); err != nil {
 		return err
 	}

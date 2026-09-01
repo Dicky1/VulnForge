@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/example/sast-dast-analyzer/internal/models"
-	"github.com/go-pdf/fpdf"
 )
 
 type ReportExporter struct{}
@@ -53,57 +52,75 @@ func (*ReportExporter) ExportHTML(r models.Report, path string) error {
 }
 
 func (*ReportExporter) ExportPDF(r models.Report, path string) error {
-	pdf := fpdf.New("P", "mm", "A4", "")
-	pdf.SetTitle("Security Analysis Report", false)
+	pdf := newStyledPDF("Security Analysis Report")
 	pdf.AddPage()
 	pdf.SetFont("Arial", "B", 20)
-	pdf.Cell(0, 12, "Security Analysis Report")
-	pdf.Ln(16)
-	pdf.SetFont("Arial", "", 10)
-	pdf.MultiCell(0, 6, fmt.Sprintf("Target: %s\nLanguages: %s\nGenerated: %s\nTotal: %d | Critical: %d | High: %d", r.TargetPath, r.Language, r.Timestamp.Format("2006-01-02 15:04 UTC"), r.TotalFindings, r.CriticalCount, r.HighCount), "", "L", false)
+	pdf.CellFormat(0, 12, "Security Analysis Report", "", 1, "L", false, 0, "")
+	pdf.Ln(2)
+	metaRow(pdf, "Target", r.TargetPath)
+	metaRow(pdf, "Languages", r.Language)
+	metaRow(pdf, "Generated", r.Timestamp.Format("2006-01-02 15:04 UTC"))
+	metaRow(pdf, "Duration", r.Duration)
+
+	pdf.Ln(3)
+	counts := severityCounts(r.Findings)
+	for _, s := range []models.Severity{models.SeverityCritical, models.SeverityHigh, models.SeverityMedium, models.SeverityLow} {
+		severityBadge(pdf, s)
+		pdf.SetFont("Arial", "", 9)
+		pdf.CellFormat(16, 5.5, fmt.Sprintf(" %d ", counts[s]), "", 0, "L", false, 0, "")
+	}
+	pdf.Ln(10)
+
 	if r.BusinessReport != nil {
 		s := r.BusinessReport.ExecutiveSummary
-		pdf.Ln(5)
-		pdf.SetFont("Arial", "B", 14)
-		pdf.Cell(0, 8, "Executive Summary")
-		pdf.Ln(9)
-		pdf.SetFont("Arial", "", 10)
-		pdf.MultiCell(0, 6, fmt.Sprintf("Overall business risk: %s (%.0f/100)\n%s\n%s\nUrgency: %s", s.OverallRiskLevel, s.OverallRiskScore, s.BriefDescription, s.BusinessImpactSummary, s.Urgency), "1", "L", false)
-		pdf.Ln(6)
-		pdf.SetFont("Arial", "B", 14)
-		pdf.Cell(0, 8, "Top Business Priorities")
-		pdf.Ln(9)
+		sectionHeader(pdf, "Executive Summary")
+		metaRow(pdf, "Overall risk", fmt.Sprintf("%s (%.0f/100)", s.OverallRiskLevel, s.OverallRiskScore))
+		metaRow(pdf, "Urgency", s.Urgency)
+		pdf.Ln(1)
+		pdf.SetFont("Arial", "", 9)
+		pdf.MultiCell(0, 5, s.BriefDescription, "", "L", false)
+		pdf.Ln(1)
+		pdf.MultiCell(0, 5, s.BusinessImpactSummary, "", "L", false)
+
+		sectionHeader(pdf, "Top Business Priorities")
 		limit := 5
 		if len(r.BusinessReport.Findings) < limit {
 			limit = len(r.BusinessReport.Findings)
 		}
 		for _, business := range r.BusinessReport.Findings[:limit] {
 			pdf.SetFont("Arial", "B", 10)
-			pdf.MultiCell(0, 5, fmt.Sprintf("Priority %d - %s", business.PriorityScore, business.Explanation.SimpleTitle), "", "L", false)
+			pdf.MultiCell(0, 5.5, fmt.Sprintf("Priority %d - %s", business.PriorityScore, business.Explanation.SimpleTitle), "", "L", false)
 			pdf.SetFont("Arial", "", 9)
-			pdf.MultiCell(0, 5, fmt.Sprintf("%s\nEstimated exposure: %s to %s\nFix summary: %s", business.Explanation.WhyDangerous, formatIDR(business.Impact.RevenueRiskMin), formatIDR(business.Impact.RevenueRiskMax), business.Explanation.FixSummary), "1", "L", false)
+			pdf.MultiCell(0, 5, business.Explanation.WhyDangerous, "", "L", false)
+			setTextColor(pdf, colorMuted)
+			pdf.MultiCell(0, 5, fmt.Sprintf("Estimated exposure: %s to %s", formatIDR(business.Impact.RevenueRiskMin), formatIDR(business.Impact.RevenueRiskMax)), "", "L", false)
+			setTextColor(pdf, colorInk)
+			pdf.MultiCell(0, 5, "Fix: "+business.Explanation.FixSummary, "", "L", false)
+			pdf.Ln(1)
+			divider(pdf)
 		}
+
 		pdf.AddPage()
-		pdf.SetFont("Arial", "B", 16)
-		pdf.Cell(0, 10, "Remediation Roadmap")
-		pdf.Ln(12)
+		sectionHeader(pdf, "Remediation Roadmap")
 		for _, phase := range r.BusinessReport.Roadmap.Phases {
 			pdf.SetFont("Arial", "B", 11)
-			pdf.Cell(0, 7, fmt.Sprintf("%s - %.1f hours", phase.Name, phase.TotalHours))
-			pdf.Ln(8)
+			pdf.CellFormat(0, 7, fmt.Sprintf("%s - due within %d day(s), %.1f effort hours", phase.Name, phase.DeadlineDays, phase.TotalHours), "", 1, "L", false, 0, "")
 			pdf.SetFont("Arial", "", 9)
 			for _, item := range phase.Items {
-				pdf.MultiCell(0, 5, fmt.Sprintf("Priority %d: %s (%s)", item.Priority, item.Title, strings.Join(item.RequiredTeams, ", ")), "", "L", false)
+				pdf.MultiCell(0, 5, fmt.Sprintf("- Priority %d: %s (%s)", item.Priority, item.Title, strings.Join(item.RequiredTeams, ", ")), "", "L", false)
 			}
+			pdf.Ln(2)
 		}
 	}
-	for _, f := range r.Findings {
-		pdf.Ln(5)
-		pdf.SetFont("Arial", "B", 11)
-		pdf.MultiCell(0, 6, fmt.Sprintf("[%s] %s", strings.ToUpper(string(f.Severity)), f.Title), "", "L", false)
-		pdf.SetFont("Arial", "", 9)
-		pdf.MultiCell(0, 5, fmt.Sprintf("%s:%d | %s | CVSS %.1f\n%s\nRemediation: %s", f.FilePath, f.LineNumber, f.CWE, f.CVSSBase, f.Description, f.Remediation), "1", "L", false)
+
+	if len(r.Findings) > 0 {
+		pdf.AddPage()
+		sectionHeader(pdf, "Findings")
+		for _, f := range r.Findings {
+			findingCard(pdf, f)
+		}
 	}
+
 	if e := ensureDir(path); e != nil {
 		return e
 	}

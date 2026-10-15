@@ -90,12 +90,22 @@ func (pe *PolicyEngine) ApplyPolicy(findings []models.Finding, p *Policy) []mode
 	for _, n := range p.Filtering.ExcludeCWE {
 		excluded[fmt.Sprintf("CWE-%d", n)] = true
 	}
+	compiledPatterns := make(map[int][]*regexp.Regexp, len(p.Rules))
+	for idx, r := range p.Rules {
+		if r.Type == "pattern" || r.Type == "custom" {
+			for _, pattern := range r.Patterns {
+				if re, err := regexp.Compile(pattern); err == nil {
+					compiledPatterns[idx] = append(compiledPatterns[idx], re)
+				}
+			}
+		}
+	}
 	out := make([]models.Finding, 0, len(findings))
 	for _, f := range findings {
 		if excluded[strings.ToUpper(f.CWE)] || excludedPath(f.FilePath, p.Filtering.ExcludePaths) || f.AIConfidence > 0 && f.AIConfidence < p.Filtering.MinimumConfidence || severityRank(f.Severity) < severityRank(p.Filtering.MinimumSeverity) {
 			continue
 		}
-		for _, r := range p.Rules {
+		for idx, r := range p.Rules {
 			if !r.Enabled || !languageAllowed(f.Language, r.Languages) {
 				continue
 			}
@@ -105,8 +115,8 @@ func (pe *PolicyEngine) ApplyPolicy(findings []models.Finding, p *Policy) []mode
 				matched = strings.EqualFold(f.CWE, "CWE-"+fmt.Sprint(r.CWE))
 			case "pattern", "custom":
 				text := f.Title + " " + f.Description + " " + f.CodeSnippet
-				for _, pattern := range r.Patterns {
-					if regexp.MustCompile(pattern).MatchString(text) {
+				for _, re := range compiledPatterns[idx] {
+					if re.MatchString(text) {
 						matched = true
 						break
 					}

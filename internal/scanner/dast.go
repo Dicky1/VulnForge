@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -42,11 +41,6 @@ func (d BaselineDAST) Scan(ctx context.Context, rawURL string) (models.ToolOutpu
 		return models.ToolOutput{Tool: "baseline-dast", ExitCode: -1}, err
 	}
 	defer resp.Body.Close()
-	limit := d.MaxBodyBytes
-	if limit <= 0 {
-		limit = 1 << 20
-	}
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, limit))
 	out := models.ToolOutput{Tool: "baseline-dast", ExitCode: 0}
 	add := func(id, title, desc string, sev models.Severity) {
 		f := makeFinding("baseline-dast", id, u.String(), 0, desc, string(sev), "")
@@ -71,13 +65,10 @@ func (d BaselineDAST) Scan(ctx context.Context, rawURL string) (models.ToolOutpu
 		for _, v := range cookie {
 			low := strings.ToLower(v)
 			if !strings.Contains(low, "secure") || !strings.Contains(low, "httponly") {
-				add("DAST-COOKIE", "Cookie lacks security attributes", "Set-Cookie lacks Secure or HttpOnly: "+v, csev(cookie))
+				add("DAST-COOKIE", "Cookie lacks security attributes", "Set-Cookie lacks Secure or HttpOnly: "+v, models.SeverityMedium)
 				break
 			}
 		}
 	}
-	if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/html") && strings.Contains(strings.ToLower(string(body)), "<script") && resp.Header.Get("Content-Security-Policy") == "" { /* already represented by CSP finding */
-	}
 	return out, nil
 }
-func csev(_ []string) models.Severity { return models.SeverityMedium }

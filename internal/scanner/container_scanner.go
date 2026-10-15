@@ -1,14 +1,10 @@
 package scanner
 
 import (
-	"archive/tar"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -18,11 +14,6 @@ import (
 type ContainerScanner struct {
 	Scanner string
 	Timeout time.Duration
-}
-type RegistryCredentials struct{ Username, Password string }
-type ImageVulnerability struct {
-	Image   string
-	Finding models.Finding
 }
 
 func NewContainerScanner() *ContainerScanner {
@@ -118,79 +109,4 @@ func parseGrype(raw []byte, image string) ([]models.Finding, error) {
 		out = append(out, f)
 	}
 	return out, nil
-}
-func (c *ContainerScanner) ExtractFilesystemFromImage(ctx context.Context, image string) (string, error) {
-	dir, err := os.MkdirTemp("", "analyzer-image-")
-	if err != nil {
-		return "", err
-	}
-	cleanup := func() { os.RemoveAll(dir) }
-	idBytes, err := exec.CommandContext(ctx, "docker", "create", image).Output()
-	if err != nil {
-		cleanup()
-		return "", err
-	}
-	id := strings.TrimSpace(string(idBytes))
-	defer exec.CommandContext(context.Background(), "docker", "rm", "-f", id).Run()
-	cmd := exec.CommandContext(ctx, "docker", "export", id)
-	pipe, err := cmd.StdoutPipe()
-	if err != nil {
-		cleanup()
-		return "", err
-	}
-	if err = cmd.Start(); err != nil {
-		cleanup()
-		return "", err
-	}
-	if err = extractTar(pipe, dir); err != nil {
-		cleanup()
-		return "", err
-	}
-	if err = cmd.Wait(); err != nil {
-		cleanup()
-		return "", err
-	}
-	return dir, nil
-}
-func extractTar(r io.Reader, dir string) error {
-	tr := tar.NewReader(r)
-	for {
-		h, err := tr.Next()
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dir, filepath.Clean(h.Name))
-		rel, err := filepath.Rel(dir, target)
-		if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
-			return fmt.Errorf("unsafe image layer path %q", h.Name)
-		}
-		switch h.Typeflag {
-		case tar.TypeDir:
-			if err = os.MkdirAll(target, 0750); err != nil {
-				return err
-			}
-		case tar.TypeReg:
-			if err = os.MkdirAll(filepath.Dir(target), 0750); err != nil {
-				return err
-			}
-			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
-			if err != nil {
-				return err
-			}
-			_, copyErr := io.CopyN(f, tr, h.Size)
-			closeErr := f.Close()
-			if copyErr != nil {
-				return copyErr
-			}
-			if closeErr != nil {
-				return closeErr
-			}
-		}
-	}
-}
-func (c *ContainerScanner) ScanContainerRegistry(context.Context, string, RegistryCredentials) ([]ImageVulnerability, error) {
-	return nil, fmt.Errorf("registry-wide enumeration requires registry-specific catalog authorization; scan explicit image references instead")
 }

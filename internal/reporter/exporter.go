@@ -205,11 +205,27 @@ func (*ReportExporter) ExportCSV(r models.Report, path string) error {
 		return e
 	}
 	for _, v := range r.Findings {
-		if e = w.Write([]string{v.ID, v.Title, string(v.Severity), v.Language, v.CWE, strconv.FormatFloat(v.CVSSBase, 'f', 1, 64), v.FilePath, strconv.Itoa(v.LineNumber), v.Remediation}); e != nil {
+		if e = w.Write([]string{
+			sanitizeCSVField(v.ID),
+			sanitizeCSVField(v.Title),
+			string(v.Severity),
+			sanitizeCSVField(v.Language),
+			sanitizeCSVField(v.CWE),
+			strconv.FormatFloat(v.CVSSBase, 'f', 1, 64),
+			sanitizeCSVField(v.FilePath),
+			strconv.Itoa(v.LineNumber),
+			sanitizeCSVField(v.Remediation),
+		}); e != nil {
 			return e
 		}
 	}
 	return w.Error()
+}
+func sanitizeCSVField(s string) string {
+	if len(s) > 0 && (s[0] == '=' || s[0] == '+' || s[0] == '-' || s[0] == '@' || s[0] == '\t' || s[0] == '\r') {
+		return "'" + s
+	}
+	return s
 }
 func write(path string, b []byte) error {
 	if e := ensureDir(path); e != nil {

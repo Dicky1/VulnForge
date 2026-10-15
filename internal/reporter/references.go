@@ -24,14 +24,3 @@ func BuildBountyReferences(f models.Finding) models.BountyReferences {
 	}
 	return r
 }
-
-// FindRelevantCVEs intentionally returns no speculative CVE. A CVE should be
-// attached only after product/version matching against authoritative records.
-func FindRelevantCVEs(models.Finding) []string { return nil }
-func MapToCWE(f models.Finding) []string {
-	if f.CWE == "" {
-		return nil
-	}
-	return []string{strings.ToUpper(f.CWE)}
-}
-func MapToOWASP(f models.Finding) []string { return BuildBountyReferences(f).OWASPIDs }

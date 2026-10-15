@@ -22,7 +22,6 @@ type Database interface {
 	GetReportByID(context.Context, string) (models.Report, error)
 	GetReportHistory(context.Context, string, int) ([]models.Report, error)
 	CompareReports(context.Context, string, string) (ComparisonResult, error)
-	GetTrendAnalysis(context.Context, string, int) (TrendData, error)
 	Close() error
 }
 type SQLiteDatabase struct{ db *sql.DB }
@@ -33,17 +32,6 @@ type ComparisonResult struct {
 	FixedFindings   []models.Finding `json:"fixed_findings,omitempty"`
 	Regressions     []models.Finding `json:"regressions,omitempty"`
 	SeverityTrend   map[string]int   `json:"severity_trend"`
-}
-type TrendPoint struct {
-	Date     string `json:"date"`
-	Critical int    `json:"critical"`
-	High     int    `json:"high"`
-	Medium   int    `json:"medium"`
-	Resolved int    `json:"resolved"`
-}
-type TrendData struct {
-	TargetPath string       `json:"target_path"`
-	Points     []TrendPoint `json:"points"`
 }
 
 func OpenSQLite(path string) (*SQLiteDatabase, error) {
@@ -182,25 +170,6 @@ func (s *SQLiteDatabase) CompareReports(ctx context.Context, baseID, currentID s
 		out.SeverityTrend[v] = bc[v] - ac[v]
 	}
 	return out, nil
-}
-func (s *SQLiteDatabase) GetTrendAnalysis(ctx context.Context, target string, days int) (TrendData, error) {
-	if days <= 0 {
-		days = 30
-	}
-	rows, err := s.db.QueryContext(ctx, `SELECT date,critical_count,high_count,medium_count,resolved_count FROM trend_analysis WHERE target_path=? AND date>=date('now',?) ORDER BY date`, target, fmt.Sprintf("-%d days", days))
-	if err != nil {
-		return TrendData{}, err
-	}
-	defer rows.Close()
-	out := TrendData{TargetPath: target}
-	for rows.Next() {
-		var p TrendPoint
-		if err = rows.Scan(&p.Date, &p.Critical, &p.High, &p.Medium, &p.Resolved); err != nil {
-			return out, err
-		}
-		out.Points = append(out.Points, p)
-	}
-	return out, rows.Err()
 }
 func newID() string {
 	b := make([]byte, 16)

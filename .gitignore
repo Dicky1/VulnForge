@@ -11,3 +11,5 @@
 /sbom.*.xml
 /.env
 /.gocache/
+/.claude/
+/lightway-report*

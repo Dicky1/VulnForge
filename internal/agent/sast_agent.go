@@ -6,7 +6,6 @@ import (
 	"github.com/example/sast-dast-analyzer/internal/models"
 	"github.com/example/sast-dast-analyzer/internal/scanner"
 	"log"
-	"os/exec"
 	"sort"
 	"strings"
 	"sync"
@@ -15,19 +14,11 @@ import (
 	"github.com/example/sast-dast-analyzer/internal/detector"
 )
 
-type scannerInterface interface {
-	Scan(context.Context, string) (models.ToolOutput, error)
-}
 type SASTAgent struct {
 	Timeout     time.Duration
 	Logger      *log.Logger
 	MaxWorkers  int
 	AutoInstall bool
-}
-
-func ValidateToolAvailability(toolName string) bool {
-	_, err := exec.LookPath(toolName)
-	return err == nil
 }
 
 func (a *SASTAgent) RunMultiLanguageSASTScan(ctx context.Context, target string, languages map[string]detector.LanguageInfo) ([]models.Finding, error) {
@@ -126,50 +117,6 @@ func (a *SASTAgent) RunMultiLanguageSASTScan(ctx context.Context, target string,
 	}
 	if len(out) == 0 && failures == len(tasks) && len(tasks) > 0 {
 		return nil, fmt.Errorf("all %d multi-language scanners were unavailable or failed", failures)
-	}
-	return out, nil
-}
-
-func (a *SASTAgent) RunSASTScan(ctx context.Context, target string, tools []string) ([]models.Finding, error) {
-	type result struct {
-		o models.ToolOutput
-		e error
-	}
-	ch := make(chan result, len(tools))
-	var wg sync.WaitGroup
-	for _, name := range tools {
-		var s scannerInterface
-		switch name {
-		case "semgrep":
-			s = scanner.NewSemgrepScanner(a.Timeout)
-		case "bandit":
-			s = scanner.NewBanditScanner(a.Timeout)
-		case "gosec":
-			s = scanner.NewGoSecScanner(a.Timeout)
-		default:
-			if a.Logger != nil {
-				a.Logger.Printf("scanner unsupported: %s", name)
-			}
-			continue
-		}
-		wg.Add(1)
-		go func() { defer wg.Done(); o, e := s.Scan(ctx, target); ch <- result{o, e} }()
-	}
-	go func() { wg.Wait(); close(ch) }()
-	var out []models.Finding
-	var errs []error
-	for r := range ch {
-		if r.e != nil {
-			errs = append(errs, r.e)
-			if a.Logger != nil {
-				a.Logger.Printf("scanner skipped: %v", r.e)
-			}
-			continue
-		}
-		out = append(out, r.o.Findings...)
-	}
-	if len(out) == 0 && len(errs) > 0 {
-		return nil, fmt.Errorf("all scanners failed: %v", errs)
 	}
 	return out, nil
 }

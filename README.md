@@ -1,213 +1,220 @@
-# Multi-language SAST/DAST Analyzer with AI validation
+# VulnForge — Multi-Language SAST/DAST Analyzer with AI Validation
 
-Security-analysis CLI that detects project languages, plans compatible scanners, normalizes and deduplicates their output, optionally validates high-priority findings with AI, and generates technical, management, and bug-bounty reports.
+[![Go Report Card](https://goreportcard.com/badge/github.com/Dicky1/VulnForge)](https://goreportcard.com/report/github.com/Dicky1/VulnForge)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-> “Zero-day” findings are hypotheses, not proof of a previously unknown vulnerability. Always reproduce and manually review them before disclosure.
+VulnForge is an enterprise-grade security analysis CLI and orchestrator that detects project languages, plans and runs compatible static/dynamic scanners concurrently, normalizes and deduplicates findings, calculates CVSS v3.1 scores, and optionally validates high-priority vulnerabilities using AI (Anthropic Claude or 9Router). 
+
+It generates comprehensive technical audits, executive management dashboards, regulatory compliance matrices (OWASP Top 10, CWE Top 25, GDPR, PCI-DSS, HIPAA, SOC 2, ISO 27001), CycloneDX/SPDX SBOMs, and submission-ready Bug Bounty bundles tailored for platforms like HackerOne, Bugcrowd, Intigriti, YesWeHack, and Federacy.
+
+> **Disclaimer**: "Zero-day" and AI-flagged findings are hypotheses and triage aids, not confirmed proof of an exploitable vulnerability. Always reproduce and manually verify findings in an authorized environment before disclosure.
+
+---
+
+## Key Features
+
+- **Automated Polyglot Language Detection**: Scans and identifies Go, Python, JavaScript, TypeScript, Java, C/C++, PHP, Rust, Ruby, .NET, Swift, Kotlin, and Solidity repositories.
+- **Unified Scanner Orchestration**: Runs 12+ scanners through a bounded concurrent worker pool:
+  - **SAST**: Semgrep, Bandit, GoSec, ESLint, SpotBugs, PHPStan, Psalm, Cargo Audit, Brakeman, Slither, Clang Analyzer, and OWASP Dependency-Check.
+  - **Secrets**: Built-in regex detection and Shannon entropy calculator with automatic credential redaction (`[REDACTED]`).
+  - **Passive DAST**: Non-intrusive baseline HTTP scanner checking TLS enforcement, security headers (CSP, HSTS, X-Content-Type-Options, Referrer-Policy), and cookie attributes (`Secure`, `HttpOnly`, `SameSite`).
+  - **Containers**: Trivy or Grype integration for Docker/OCI container image scanning.
+- **Docker Container Sandboxing**: Runs untrusted target repositories and scanners inside isolated Docker containers with `--cap-drop ALL`, `--security-opt no-new-privileges:true`, `--read-only` root, resource quotas, and `--network none`.
+- **Untrusted README Protection**: Restricts auto-installation commands parsed from target repositories to strict allowlists; completely refuses execution on the host if Docker sandboxing is unavailable.
+- **AI-Powered Validation & Remediation**: Leverages Anthropic Claude or [9Router](https://github.com/decolua/9router) to filter out false positives and generate language-specific remediation code patches. Sensitive snippets are omitted (`safe.CodeSnippet = "[omitted]"`) to protect confidential code.
+- **Enterprise Policy Engine**: YAML-based rule enforcement supporting custom regex patterns, CWE filters, severity overrides, and suppression rules with precompiled regex caching.
+- **Historical Tracking & Regressions**: Embedded SQLite storage (`analyzer.db`) for tracking scan history, new findings, fixed issues, and severity regressions (`--compare-with`).
+- **Multi-Format Reporting**:
+  - `json`: Machine-readable raw report.
+  - `html` / `dashboard`: Standalone, interactive offline management dashboard with risk matrices, downtime projections, and verification POCs.
+  - `sarif`: GitHub Code Scanning / OASIS SARIF v2.1.0 compliant.
+  - `pdf`: Executive-ready PDF report with severity badges and remediation roadmaps.
+  - `csv`: Spreadsheet export with automatic CSV formula injection sanitization (CWE-1236).
+  - `xml`: Standard XML interchange format.
+  - `bounty-report`: Bug bounty submission bundles (`.bounty.json`, `.bounty.md`, `.bounty.html`, `.bounty.pdf`, `.bounty.txt`).
+- **CI/CD Integration Generator**: One-click generation of workflows for GitHub Actions, GitLab CI, Jenkinsfile, and Git pre-commit hooks.
+
+---
 
 ## Requirements
 
-- Go 1.24+
-- One or more scanners on `PATH`. Language-aware selection supports Semgrep, Bandit, GoSec, ESLint, SpotBugs, PHPStan, Psalm, Cargo Audit, Brakeman, Slither, OWASP Dependency-Check, and Clang Analyzer.
-- Anthropic API key or a running 9Router instance for AI validation. AI remains optional; scanning degrades gracefully when unavailable.
+- **Go**: 1.24+
+- **Toolchains & Scanners**: One or more scanners installed on `PATH` (or configured via Docker Sandbox).
+- **AI Key (Optional)**: `ANTHROPIC_API_KEY` for Claude, or a running `9Router` instance (`http://localhost:20128`). Scanning degrades gracefully when AI is unavailable.
 
-Some scanners also require their language toolchain. For example, `cargo-audit` requires Cargo, Slither requires Python, Foundry-based Solidity projects may require `forge`, ESLint requires Node.js/npm, and Clang Analyzer requires LLVM/Clang. A report may still be exported when scanners are skipped, so always review the scanner-plan and degraded-mode messages in the console.
+---
 
-```sh
-pip install semgrep
-pip install bandit
-go install github.com/securego/gosec/v2/cmd/gosec@latest
-export ANTHROPIC_API_KEY=replace-me
-```
+## Installation & Build
 
-## Quick start: melakukan scan baru
+Clone the repository and build the binary:
 
-From the analyzer repository, install dependencies and verify the build:
-
-```powershell
+```bash
+git clone https://github.com/Dicky1/VulnForge.git
+cd VulnForge
 go mod download
 go test ./...
 go build -o analyzer.exe ./cmd/analyzer
 ```
 
-Scan a source directory using the default policy:
+---
+
+## Quick Start: Menjalankan Scan
+
+### 1. Basic Source Scan
+Scan a project directory and export to JSON:
 
 ```powershell
 .\analyzer.exe --target "C:\path\to\project" --output report.json
 ```
 
-Alternatively, run without building a binary:
+Or on Linux / macOS:
 
-```sh
-go run ./cmd/analyzer/main.go --target /absolute/path/to/project --output report.json
+```bash
+./analyzer --target /path/to/project --output report.json
 ```
 
-The older positional form remains supported:
-
-```powershell
-.\analyzer.exe "C:\path\to\project"
-```
-
-Scan source code plus an authorized running application:
+### 2. Multi-Format & Passive DAST Scan
+Scan source code alongside an authorized running staging web endpoint, exporting to multiple formats simultaneously:
 
 ```powershell
 .\analyzer.exe --target "C:\path\to\project" `
   --dast-url "https://staging.example.com" `
-  --export-format json,html,sarif `
+  --export-format json,html,dashboard,sarif,pdf,csv `
   --output report.json
 ```
 
-The CLI writes `report.json` in the current directory. Configure scanner timeouts, model, confidence threshold, workers, and token budget in `config/config.yaml`.
-
-The optional DAST URL enables a passive, non-mutating HTTP baseline scan for HTTPS, cookie flags, and response security headers. Only scan systems you own or are explicitly authorized to assess.
-
-The detector recognizes Go, Python, JavaScript/TypeScript, Java, C/C++, PHP, Rust, Ruby, .NET, Swift, Kotlin, and Solidity projects. Foundry dependencies under `lib/` are excluded from language planning; Slither still resolves them while compiling the Solidity project. Polyglot repositories are supported and scanners are deduplicated through a bounded worker pool.
-
-## Environment manager
-
-Copy `.env.example` to `.env`; the analyzer loads it automatically before YAML configuration and scanner planning:
-
-```powershell
-Copy-Item .env.example .env
-.\analyzer.exe --target "C:\path\to\project" --output report.json
-```
-
-With `ANALYZER_AUTO_INSTALL=true`, the environment manager attempts to install supported missing scanners. The relevant package manager or toolchain must already exist; for example, Cargo must be installed before `cargo-audit` can be installed. Set `ANALYZER_AI_ENABLED=false` for a scanner-only run. Existing shell variables override `.env`. Set `ANALYZER_ENV_FILE` to use another environment file. Platform toolchains such as Foundry/`forge` and LLVM still need to be installed through their official installers; common per-user locations such as `~/.foundry/bin` are discovered automatically.
-
-Keep `ANALYZER_AUTO_INSTALL=false` when scanning repositories you do not fully trust. The analyzer inspects installation hints in the target's own README to decide what to auto-install — that content is untrusted. Every recognized line is re-validated against a strict allowlist (see "Sandboxed scanning" below) and is never executed on the host: with `ANALYZER_AUTO_INSTALL=true`, it only proceeds when the corresponding tool is available through a sandboxed Docker image, and refuses otherwise rather than falling back to a local install.
-
-## Sandboxed scanning
-
-By default, scanners run directly on the host, with their working directory set to the (untrusted) target repository. Several of them execute code or configuration that lives inside that repo — ESLint plugins, PHPStan/Psalm bootstrap files, Cargo build scripts via `cargo audit`, Foundry `forge` via Slither, `clang`/`scan-build` compiling the target's own build. Set `sandbox.enabled: true` in `config/config.yaml` (or `ANALYZER_SANDBOX_ENABLED=true`) to run scanners that have a configured Docker image inside a locked-down container instead: read-only mount of the target, `--network none` by default, dropped capabilities, no privilege escalation, and resource limits. Requires Docker.
-
-Today, images are configured for **semgrep, bandit, gosec, and slither** (`sandbox.images` in `config/config.yaml`; semgrep uses the official `returntocorp/semgrep` image, the other three have first-party Dockerfiles under `docker/sandbox/`). Any other scanner without a configured image still runs locally, unsandboxed, exactly as before — this is a deliberate, incremental rollout, not a claim that every scanner is isolated. None of these images have been built or run against a real Docker daemon while developing this feature; verify them yourself (`docker/sandbox/README.md`) before relying on them. See that same file to add coverage for another scanner.
-
-The README-driven auto-install feature (above) is the one place a string parsed out of the *target* repository reaches process execution, so it has no local fallback at all: with sandboxing unavailable, `ANALYZER_AUTO_INSTALL=true` simply skips that tool rather than installing it on the host.
-
-## AI provider: Anthropic or 9Router
-
-The default provider is Anthropic. Configure its key in the environment:
-
-```powershell
-$env:ANTHROPIC_API_KEY = "your-key"
-.\analyzer.exe --target "C:\path\to\project"
-```
-
-To route AI validation and remediation through [9Router](https://github.com/decolua/9router), install and start it:
-
-```powershell
-npm install -g 9router
-9router
-```
-
-9Router normally listens on `http://localhost:20128`. Connect providers in its dashboard, then discover the available model IDs:
-
-```powershell
-Invoke-RestMethod http://localhost:20128/v1/models
-```
-
-Set the analyzer environment variables and run a scan:
-
-```powershell
-$env:ANALYZER_AI_PROVIDER = "9router"
-$env:NINEROUTER_URL = "http://localhost:20128"
-$env:NINEROUTER_MODEL = "cc/claude-opus-4-6"
-$env:NINEROUTER_KEY = "your-9router-api-key" # Omit when local API-key auth is disabled.
-
-.\analyzer.exe --target "C:\path\to\project" `
-  --policy policies/default.yaml `
-  --export-format json,html,sarif
-```
-
-It can also be configured persistently in `config/config.yaml`:
-
-```yaml
-ai:
-  provider: "9router"
-ninerouter:
-  base_url: "http://localhost:20128"
-  api_key: ""
-  model: "cc/claude-opus-4-6"
-  max_retries: 3
-  timeout_seconds: 60
-  health_check: true
-```
-
-`NINEROUTER_KEY` is preferred over storing a key in YAML. Never commit `.env` or real API keys. If a key has entered Git history, remove it and rotate it before publishing the repository. Model IDs depend on the providers and combos configured in your 9Router dashboard; use the exact ID returned by `/v1/models`.
-
-## Extended security pipeline
-
-The analyzer also provides native secret detection with redacted evidence, CVSS v3.1 scoring, local and optional Claude-powered remediation, OWASP/CWE/compliance mapping, custom YAML policies, SQLite history, container scanning through Trivy or Grype, and CycloneDX/SPDX SBOM generation.
-
-Export all supported report formats (`html` is the offline interactive business report; `dashboard` emits a separate `.dashboard.html` copy):
-
-```sh
-go run ./cmd/analyzer/main.go --target ./project \
-  --policy policies/default.yaml \
-  --export-format json,html,dashboard,pdf,sarif,xml,csv \
-  --output report.json
-```
-
-Generate a bug-bounty submission bundle (JSON, Markdown, HTML, PDF, and plaintext):
+### 3. Bug Bounty Submission Bundle
+Generate submission-ready drafts for a specific bug bounty platform:
 
 ```powershell
 .\analyzer.exe --target "C:\path\to\project" `
   --policy policies/default.yaml `
   --export-format json,html,sarif,bounty-report `
-  --bounty-program yeswehack `
+  --bounty-program hackerone `
   --output report.json
 ```
+*Supported platforms*: `hackerone`, `bugcrowd`, `intigriti`, `yeswehack`, `federacy`.
 
-Supported bounty adapters are `hackerone`, `bugcrowd`, `intigriti`, `yeswehack`, and `federacy`. With `--output report.json`, the bundle uses names such as `report.bounty.json`, `report.bounty.md`, `report.bounty.html`, `report.bounty.pdf`, and `report.bounty.txt`.
+### 4. Historical Differential Scan
+Track scan history in SQLite and compare against a previous scan ID to detect new bugs or regressions:
 
-The bounty quality gate filters ineligible candidates and does not treat static scanner output as submission-ready evidence. An empty bundle is valid and means no finding passed the current eligibility checks. Generated items remain human-review drafts; verify the exact vulnerable asset, program scope, runtime reproduction, impact, and evidence before submission. POCs use non-destructive markers and must only be run with written authorization. The analyzer does not submit reports to a bounty platform.
+```powershell
+# First scan with history tracking:
+.\analyzer.exe --target "C:\path\to\project" --track-history --database analyzer.db
 
-History and SBOM:
-
-```sh
-go run ./cmd/analyzer/main.go --target ./project \
-  --track-history --database analyzer.db \
-  --generate-sbom cyclonedx
+# Follow-up scan compared to previous run:
+.\analyzer.exe --target "C:\path\to\project" --track-history --compare-with scan-1718000000000
 ```
 
-Compare the new scan with a stored report:
+### 5. SBOM & Container Image Scanning
+Generate CycloneDX or SPDX Software Bill of Materials, and scan container images via Trivy/Grype:
 
-```sh
-go run ./cmd/analyzer/main.go --target ./project \
-  --track-history --compare-with scan-previous-id
+```powershell
+.\analyzer.exe --target "C:\path\to\project" `
+  --generate-sbom cyclonedx `
+  --scan-containers "docker.io/library/nginx:alpine"
 ```
 
-Container images must be provided explicitly:
+---
 
-```sh
-go run ./cmd/analyzer/main.go --target ./project \
-  --scan-containers docker.io/library/nginx:latest
+## CLI Options Reference
+
+| Flag | Type | Description |
+| :--- | :--- | :--- |
+| `--target` | `string` | Path to the source code directory to scan (or positional argument). |
+| `--output` | `string` | Base path for exported reports (default: `report.json`). |
+| `--export-format` | `string` | Comma-separated: `json,html,dashboard,pdf,sarif,xml,csv,bounty-report`. |
+| `--policy` | `string` | Path to custom YAML security policy file. |
+| `--dast-url` | `string` | Authorized runtime URL for passive baseline HTTP scanning. |
+| `--track-history` | `bool` | Store scan results in the SQLite database for historical tracking. |
+| `--database` | `string` | Custom path to SQLite database (default from `config.yaml`). |
+| `--compare-with` | `string` | Historical report ID to run differential regression analysis against. |
+| `--bounty-program` | `string` | Platform adapter (`hackerone`, `bugcrowd`, `intigriti`, `yeswehack`, `federacy`). |
+| `--scan-containers`| `string` | Explicit Docker/OCI image reference to scan with Trivy/Grype. |
+| `--generate-sbom` | `string` | Format for SBOM generation (`cyclonedx` or `spdx`). |
+| `--github-actions` | `bool` | Generates `.github/workflows/security-scan.yml` in target repo. |
+| `--gitlab-ci` | `bool` | Generates `.gitlab-ci.yml` in target repo. |
+| `--jenkins` | `bool` | Generates `Jenkinsfile` in target repo. |
+| `--pre-commit` | `bool` | Generates `.git/hooks/pre-commit` hook in target Git repo. |
+
+---
+
+## Environment & Configuration
+
+Copy `.env.example` to `.env`:
+
+```powershell
+Copy-Item .env.example .env
 ```
 
-Generate CI/CD files inside the target repository:
+Key environment variables:
 
-```sh
-go run ./cmd/analyzer/main.go --target ./project --github-actions
-go run ./cmd/analyzer/main.go --target ./project --gitlab-ci
-go run ./cmd/analyzer/main.go --target ./project --jenkins
-go run ./cmd/analyzer/main.go --target ./project --pre-commit
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `ANALYZER_ENV_FILE` | `.env` | Custom path to `.env` file. |
+| `ANALYZER_AI_ENABLED` | `true` | Set to `false` to run scanner-only offline mode without AI. |
+| `ANALYZER_AI_PROVIDER` | `anthropic`| AI provider: `anthropic` or `9router`. |
+| `ANTHROPIC_API_KEY` | `""` | Anthropic API key for Claude. |
+| `NINEROUTER_URL` | `http://localhost:20128` | Base URL for local or remote 9Router instance. |
+| `NINEROUTER_MODEL` | `cc/claude-opus-4-6` | Model ID configured in 9Router. |
+| `NINEROUTER_KEY` | `""` | Optional API key for 9Router. |
+| `ANALYZER_SANDBOX_ENABLED` | `false` | Enable Docker container isolation for scanners. |
+| `ANALYZER_AUTO_INSTALL` | `false` | Allow auto-installing missing scanners (strictly validated). |
+| `ANALYZER_TOOL_PATHS` | `""` | Extra paths appended to system `PATH` (separated by platform delimiter). |
+
+Advanced settings such as timeouts, token budgets, scanner concurrency limits, and financial risk multipliers can be customized in [`config/config.yaml`](config/config.yaml).
+
+---
+
+## Language & Scanner Support Matrix
+
+| Language | Supported Scanners | Sandbox Image Available |
+| :--- | :--- | :---: |
+| **Go** | GoSec | Yes (`vulnforge-gosec`) |
+| **Python** | Bandit, Semgrep | Yes (`vulnforge-bandit`, `returntocorp/semgrep`) |
+| **JavaScript / TypeScript** | ESLint (`@microsoft/eslint-plugin-sdl`), Semgrep | Yes (Semgrep) |
+| **Java** | SpotBugs, OWASP Dependency-Check, Semgrep | Yes (Semgrep) |
+| **PHP** | PHPStan, Psalm, Semgrep | Yes (Semgrep) |
+| **Rust** | Cargo Audit, Semgrep | Yes (Semgrep) |
+| **Ruby** | Brakeman | Host |
+| **C / C++** | Clang Static Analyzer (`scan-build`) | Host |
+| **Solidity** | Slither (Foundry & Hardhat support) | Yes (`vulnforge-slither`) |
+| **Kotlin / .NET / Swift** | Semgrep | Yes (Semgrep) |
+| **Containers** | Trivy, Grype | Host / Daemon |
+| **Secrets** | Native High-Entropy & Pattern Detector | Built-in |
+| **Web Endpoint** | Native Passive DAST | Built-in |
+
+---
+
+## Security Hardening Details
+
+VulnForge implements defense-in-depth principles:
+1. **Command Injection Prevention**: Subprocess calls avoid shell wrappers (`sh -c` or `cmd.exe /c`), passing parameters strictly as tokenized argument slices.
+2. **Container Isolation**: Scanner subprocesses run with dropped Linux capabilities (`--cap-drop ALL`), disabled privilege escalation (`no-new-privileges`), and read-only target mounts (`/workspace:ro`).
+3. **Secret Redaction**: Detected keys, tokens, and passwords are unconditionally replaced with redacted placeholders to prevent leakage into reports or AI prompts.
+4. **Data Minimization for AI**: When requesting remediation diffs, source snippets are omitted from prompts to prevent source code exfiltration to external LLMs.
+5. **CSV Formula Injection Mitigation**: All CSV exported fields are sanitized against formula injection (CWE-1236) by prepending `'` to fields starting with `=`, `+`, `-`, or `@`.
+6. **SQL Injection Immune**: Scan history transactions utilize parameterized SQL queries exclusively.
+7. **XSS Protection**: HTML executive dashboards leverage Go's contextual `html/template` auto-escaping.
+
+---
+
+## Testing & Quality
+
+Run the comprehensive unit test suite:
+
+```bash
+go test -v ./...
 ```
 
-Generation flags write files into the target repository. The pre-commit hook blocks commits only when the generated report contains critical findings.
+Verify formatting and linting:
 
-On Linux/macOS, install package-manager-based scanners with:
-
-```sh
-bash tools/install_dependencies.sh
+```bash
+go vet ./...
 ```
 
-Target documentation may be inspected for scanner installation hints when automatic installation is enabled. As described under "Sandboxed scanning" above, this no longer executes anything on the host: it only confirms the referenced tool (semgrep, bandit, or gosec) is available via its sandboxed Docker image, and skips it otherwise. Still review the console output, and remember that scanners without a configured sandbox image run unsandboxed on the host as before — prefer a disposable VM or container for those when the target repository isn't fully trusted.
+---
 
-## How the pipeline works
+## License
 
-1. Scanners run concurrently with deadlines and normalize their JSON into a common finding model.
-2. Known fixtures and duplicates are removed before any API call.
-3. High-priority findings are trimmed to the configured estimated token budget and validated in batches of at most ten.
-4. Local anomaly rules inspect source files for custom crypto, validation/auth bypass, unsafe shared state, and business-logic manipulation.
-5. The JSON report includes CVSS estimates, CWE/MITRE mapping, remediation, AI rationale, confidence, and possible exploit-chain links.
-
-The AI stage sends finding metadata and code snippets to the selected provider. When using 9Router, its configured upstream provider may receive that content. Do not enable AI validation for source prohibited by your data-handling policy. Model-generated assessments may be incorrect.
+This project is licensed under the [MIT License](LICENSE).

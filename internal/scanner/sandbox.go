@@ -125,10 +125,9 @@ func hardenedDockerArgs(containerName, network string) []string {
 
 // RunScannerSandboxed runs `name args...` inside the Docker image configured
 // for that tool, with dir mounted read-only at /workspace so the tool can
-// read but never modify the scanned repository. ranSandboxed is false, with
-// a nil error, when sandboxing isn't enabled, no image is configured for
-// this tool, or Docker isn't reachable — the caller must fall back to its
-// own local execution in that case.
+// read but never modify the scanned repository. ranSandboxed is false with a nil error only when isolation is disabled.
+// When isolation is enabled, missing images or Docker are errors, never
+// permission to run on the host.
 func RunScannerSandboxed(ctx context.Context, timeout time.Duration, dir string, env []string, name string, args ...string) (commandResult, bool, error) {
 	return runScannerSandboxed(ctx, timeout, dir, "", env, name, args...)
 }
@@ -147,8 +146,14 @@ func RunScannerSandboxedWithOutput(ctx context.Context, timeout time.Duration, d
 
 func runScannerSandboxed(ctx context.Context, timeout time.Duration, dir, outputHostPath string, env []string, name string, args ...string) (commandResult, bool, error) {
 	image, ok := sandbox.Images[name]
-	if !sandbox.Enabled || !ok || !dockerReady() {
+	if !sandbox.Enabled {
 		return commandResult{}, false, nil
+	}
+	if !ok || image == "" {
+		return commandResult{exitCode: -1}, true, fmt.Errorf("sandbox required: no image configured for %s", name)
+	}
+	if !dockerReady() {
+		return commandResult{exitCode: -1}, true, fmt.Errorf("sandbox required: Docker unavailable for %s", name)
 	}
 	containerName := fmt.Sprintf("vulnforge-%s-%d", name, time.Now().UnixNano())
 	dockerArgs := hardenedDockerArgs(containerName, networkPolicy(name))
@@ -180,7 +185,9 @@ func runDocker(ctx context.Context, timeout time.Duration, containerName string,
 	if ctx.Err() != nil {
 		// --rm handles a normal exit, but a client process killed on timeout
 		// can otherwise orphan a running container.
-		_ = exec.Command("docker", "kill", containerName).Run()
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_ = exec.CommandContext(cleanupCtx, "docker", "kill", containerName).Run()
 	}
 	return interpretExecResult(ctx, b, err)
 }

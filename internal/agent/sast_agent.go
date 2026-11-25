@@ -2,9 +2,8 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"github.com/example/sast-dast-analyzer/internal/models"
-	"github.com/example/sast-dast-analyzer/internal/scanner"
 	"log"
 	"sort"
 	"strings"
@@ -12,6 +11,8 @@ import (
 	"time"
 
 	"github.com/example/sast-dast-analyzer/internal/detector"
+	"github.com/example/sast-dast-analyzer/internal/models"
+	"github.com/example/sast-dast-analyzer/internal/scanner"
 )
 
 type SASTAgent struct {
@@ -22,6 +23,11 @@ type SASTAgent struct {
 }
 
 func (a *SASTAgent) RunMultiLanguageSASTScan(ctx context.Context, target string, languages map[string]detector.LanguageInfo) ([]models.Finding, error) {
+	findings, _, err := a.ScanWithCoverage(ctx, target, languages)
+	return findings, err
+}
+
+func (a *SASTAgent) ScanWithCoverage(ctx context.Context, target string, languages map[string]detector.LanguageInfo) ([]models.Finding, []string, error) {
 	registry := scanner.NewToolRegistry(a.Timeout)
 	recommended := detector.NewLanguageDetector(target).GetRecommendedToolsForLanguages(languages)
 	type task struct {
@@ -29,6 +35,7 @@ func (a *SASTAgent) RunMultiLanguageSASTScan(ctx context.Context, target string,
 		scanner    models.Scanner
 	}
 	var tasks []task
+	var incomplete []string
 	seen := map[string]bool{}
 	for lang, names := range recommended {
 		for _, name := range names {
@@ -36,13 +43,14 @@ func (a *SASTAgent) RunMultiLanguageSASTScan(ctx context.Context, target string,
 				continue
 			}
 			s, ok := registry[name]
+			seen[name] = true
 			if !ok {
 				if a.Logger != nil {
 					a.Logger.Printf("scanner %s recommended for %s but no wrapper is registered", name, lang)
 				}
+				incomplete = append(incomplete, name)
 				continue
 			}
-			seen[name] = true
 			tasks = append(tasks, task{lang, name, s})
 		}
 	}
@@ -75,11 +83,18 @@ func (a *SASTAgent) RunMultiLanguageSASTScan(ctx context.Context, target string,
 		wg.Add(1)
 		go func(t task) {
 			defer wg.Done()
-			sem <- struct{}{}
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
 			defer func() { <-sem }()
+			if ctx.Err() != nil {
+				return
+			}
 			if !t.scanner.IsInstalled() {
 				if !a.AutoInstall {
-					ch <- result{err: fmt.Errorf("not installed (set ANALYZER_AUTO_INSTALL=true in .env)"), name: t.name}
+					ch <- result{err: errors.New("scanner unavailable"), name: t.name}
 					return
 				}
 				if a.Logger != nil {
@@ -115,6 +130,7 @@ func (a *SASTAgent) RunMultiLanguageSASTScan(ctx context.Context, target string,
 	for r := range ch {
 		if r.err != nil {
 			failures++
+			incomplete = append(incomplete, r.name)
 			if a.Logger != nil {
 				a.Logger.Printf("scanner %s skipped: %v", r.name, r.err)
 			}
@@ -122,8 +138,18 @@ func (a *SASTAgent) RunMultiLanguageSASTScan(ctx context.Context, target string,
 		}
 		out = append(out, r.findings...)
 	}
-	if len(out) == 0 && failures == len(tasks) && len(tasks) > 0 {
-		return nil, fmt.Errorf("all %d multi-language scanners were unavailable or failed", failures)
+	sort.Strings(incomplete)
+	if err := ctx.Err(); err != nil {
+		return nil, incomplete, err
 	}
-	return out, nil
+	if len(out) == 0 && failures == len(tasks) && len(tasks) > 0 {
+		return nil, incomplete, fmt.Errorf("all %d multi-language scanners were unavailable or failed", failures)
+	}
+	if len(tasks) == 0 && len(languages) > 0 {
+		if len(incomplete) == 0 {
+			incomplete = append(incomplete, "sast")
+		}
+		return nil, incomplete, errors.New("no scanners were available for the detected languages")
+	}
+	return out, incomplete, nil
 }

@@ -7,7 +7,9 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/example/sast-dast-analyzer/internal/models"
@@ -54,7 +56,6 @@ func (s *SQLiteDatabase) SaveReport(ctx context.Context, r models.Report) (strin
 	if err != nil {
 		return "", err
 	}
-	resolved := s.resolvedSincePrevious(ctx, r)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
@@ -74,24 +75,44 @@ func (s *SQLiteDatabase) SaveReport(ctx context.Context, r models.Report) (strin
 			return "", err
 		}
 	}
-	counts := severityCounts(r.Findings)
-	_, err = tx.ExecContext(ctx, `INSERT INTO trend_analysis(target_path,date,critical_count,high_count,medium_count,resolved_count) VALUES(?,?,?,?,?,?) ON CONFLICT(target_path,date) DO UPDATE SET critical_count=excluded.critical_count,high_count=excluded.high_count,medium_count=excluded.medium_count,resolved_count=excluded.resolved_count`, r.TargetPath, r.Timestamp.Format("2006-01-02"), counts["critical"], counts["high"], counts["medium"], resolved)
-	if err != nil {
-		return "", err
+	// The legacy trend table has one row per target and day, without room
+	// for distinct endpoint lists or authenticated scan profiles.
+	if len(r.IncompleteChecks) == 0 && len(r.DASTEndpoints) <= 1 && r.DASTSession == "" &&
+		(r.DASTTargetURL == "" || r.TargetPath == r.DASTTargetURL) {
+		resolved, err := resolvedSincePrevious(ctx, tx, r)
+		if err != nil {
+			return "", err
+		}
+		counts := severityCounts(r.Findings)
+		_, err = tx.ExecContext(ctx, `INSERT INTO trend_analysis(target_path,date,critical_count,high_count,medium_count,resolved_count) VALUES(?,?,?,?,?,?) ON CONFLICT(target_path,date) DO UPDATE SET critical_count=excluded.critical_count,high_count=excluded.high_count,medium_count=excluded.medium_count,resolved_count=excluded.resolved_count`, r.TargetPath, r.Timestamp.Format("2006-01-02"), counts["critical"], counts["high"], counts["medium"], resolved)
+		if err != nil {
+			return "", err
+		}
 	}
 	if err = tx.Commit(); err != nil {
 		return "", err
 	}
 	return r.ID, nil
 }
-func (s *SQLiteDatabase) resolvedSincePrevious(ctx context.Context, current models.Report) int {
+func resolvedSincePrevious(ctx context.Context, tx *sql.Tx, current models.Report) (int, error) {
 	var b []byte
-	if err := s.db.QueryRowContext(ctx, `SELECT report_json FROM reports WHERE target_path=? ORDER BY timestamp DESC LIMIT 1`, current.TargetPath).Scan(&b); err != nil {
-		return 0
+	err := tx.QueryRowContext(ctx, `SELECT report_json FROM reports WHERE target_path=? AND id<>?
+		AND COALESCE(json_extract(CAST(report_json AS TEXT), '$.dast_target_url'), '')=?
+		AND COALESCE(json_array_length(CAST(report_json AS TEXT), '$.dast_endpoints'), 0)<=1
+		AND COALESCE(json_extract(CAST(report_json AS TEXT), '$.dast_session'), '')=''
+		ORDER BY timestamp DESC, rowid DESC LIMIT 1`, current.TargetPath, current.ID, current.DASTTargetURL).Scan(&b)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
 	}
 	var previous models.Report
-	if json.Unmarshal(b, &previous) != nil {
-		return 0
+	if err := json.Unmarshal(b, &previous); err != nil {
+		return 0, err
+	}
+	if len(previous.IncompleteChecks) > 0 || legacyDASTCookies(previous) {
+		return 0, nil
 	}
 	now := byID(current.Findings)
 	resolved := 0
@@ -100,7 +121,7 @@ func (s *SQLiteDatabase) resolvedSincePrevious(ctx context.Context, current mode
 			resolved++
 		}
 	}
-	return resolved
+	return resolved, nil
 }
 func (s *SQLiteDatabase) PruneOlderThan(ctx context.Context, days int) error {
 	if days <= 0 {
@@ -150,18 +171,31 @@ func (s *SQLiteDatabase) CompareReports(ctx context.Context, baseID, currentID s
 	if e != nil {
 		return ComparisonResult{}, e
 	}
+	if a.TargetPath != b.TargetPath || a.DASTTargetURL != b.DASTTargetURL {
+		return ComparisonResult{}, errors.New("reports have different source or DAST targets")
+	}
+	if a.DASTSession != b.DASTSession || !maps.Equal(dastEndpointSet(a), dastEndpointSet(b)) {
+		return ComparisonResult{}, errors.New("reports have different DAST endpoint lists or session modes")
+	}
+	if len(a.IncompleteChecks) > 0 || len(b.IncompleteChecks) > 0 {
+		return ComparisonResult{}, errors.New("both reports must have completed scans for comparison")
+	}
+	if legacyDASTCookies(a) != legacyDASTCookies(b) && (len(a.DASTEndpoints) > 0 || len(b.DASTEndpoints) > 0) &&
+		(len(a.DASTEndpoints) == 0 || len(b.DASTEndpoints) == 0) {
+		return ComparisonResult{}, errors.New("baseline cookie findings use legacy IDs; establish a new DAST baseline")
+	}
 	out := ComparisonResult{BaseReportID: baseID, CurrentReportID: currentID, SeverityTrend: map[string]int{}}
 	am, bm := byID(a.Findings), byID(b.Findings)
-	for id, f := range bm {
-		old, ok := am[id]
+	for _, f := range b.Findings {
+		old, ok := am[f.ID]
 		if !ok {
 			out.NewFindings = append(out.NewFindings, f)
 		} else if severityValue(f.Severity) > severityValue(old.Severity) {
 			out.Regressions = append(out.Regressions, f)
 		}
 	}
-	for id, f := range am {
-		if _, ok := bm[id]; !ok {
+	for _, f := range a.Findings {
+		if _, ok := bm[f.ID]; !ok {
 			out.FixedFindings = append(out.FixedFindings, f)
 		}
 	}
@@ -170,6 +204,27 @@ func (s *SQLiteDatabase) CompareReports(ctx context.Context, baseID, currentID s
 		out.SeverityTrend[v] = bc[v] - ac[v]
 	}
 	return out, nil
+}
+
+func dastEndpointSet(r models.Report) map[string]bool {
+	targets := make(map[string]bool, len(r.DASTEndpoints))
+	for _, endpoint := range r.DASTEndpoints {
+		targets[endpoint.RequestedURL] = true
+	}
+	if len(targets) == 0 && r.DASTTargetURL != "" {
+		targets[r.DASTTargetURL] = true
+	}
+	return targets
+}
+
+func legacyDASTCookies(r models.Report) bool {
+	for _, finding := range r.Findings {
+		if finding.SourceTool == "baseline-dast" && finding.DASTEvidence == nil &&
+			(finding.Title == "Cookie lacks security attributes" || finding.Title == "Cookie has no SameSite attribute") {
+			return true
+		}
+	}
+	return false
 }
 func newID() string {
 	b := make([]byte, 16)

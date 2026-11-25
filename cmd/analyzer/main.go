@@ -2,13 +2,14 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"encoding/xml"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -30,11 +31,16 @@ import (
 	"github.com/example/sast-dast-analyzer/internal/storage"
 	claudepkg "github.com/example/sast-dast-analyzer/pkg/claude"
 	"github.com/example/sast-dast-analyzer/pkg/ninerouter"
+	"gopkg.in/yaml.v2"
 )
 
 type options struct {
 	target, output, formats, policy, dastURL, containerImage, sbomFormat, compareID, dbPath, bountyProgram, configPath string
 	track, githubActions, gitlabCI, jenkins, preCommit                                                                 bool
+	dastOnly, dastDirect                                                                                               bool
+	dastTargets, dastSession                                                                                           string
+	dastInterval                                                                                                       time.Duration
+	dastMaxRequests                                                                                                    int
 }
 type validationClient interface {
 	ValidateFindings(context.Context, string) (string, error)
@@ -49,7 +55,9 @@ func main() {
 			os.Exit(1)
 		}
 	}()
-	if err := run(context.Background(), logger, os.Args[1:]); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	if err := run(ctx, logger, os.Args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return // -h/--help already printed usage; not an error
 		}
@@ -60,7 +68,13 @@ func main() {
 
 func parseOptions(args []string) (options, error) {
 	var o options
-	fs := flag.NewFlagSet("analyzer", flag.ContinueOnError)
+	name := "analyzer"
+	if len(args) > 0 && args[0] == "dast" {
+		o.dastOnly = true
+		name += " dast"
+		args = args[1:]
+	}
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.StringVar(&o.target, "target", "", "source directory to scan")
 	fs.StringVar(&o.output, "output", "", "base report output path")
@@ -68,6 +82,11 @@ func parseOptions(args []string) (options, error) {
 	fs.StringVar(&o.policy, "policy", "", "policy YAML path")
 	fs.StringVar(&o.configPath, "config", "", "config YAML path (default $ANALYZER_CONFIG or config/config.yaml)")
 	fs.StringVar(&o.dastURL, "dast-url", "", "authorized runtime URL for passive DAST")
+	fs.StringVar(&o.dastTargets, "dast-targets", "", "YAML manifest of an authorized origin and endpoint paths")
+	fs.StringVar(&o.dastSession, "dast-session", "", "use an existing bearer or cookie session in dast mode")
+	fs.DurationVar(&o.dastInterval, "dast-interval", 250*time.Millisecond, "minimum interval between DAST requests, including redirects")
+	fs.IntVar(&o.dastMaxRequests, "dast-max-requests", 100, "DAST request budget, including redirects")
+	fs.BoolVar(&o.dastDirect, "dast-no-proxy", false, "ignore proxy environment settings for DAST")
 	fs.BoolVar(&o.track, "track-history", false, "save report in SQLite history")
 	fs.StringVar(&o.dbPath, "database", "", "SQLite database path")
 	fs.StringVar(&o.containerImage, "scan-containers", "", "explicit Docker/OCI image reference")
@@ -81,16 +100,23 @@ func parseOptions(args []string) (options, error) {
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}
-	if o.target == "" && fs.NArg() > 0 {
+	if fs.NArg() > 0 {
+		if o.target != "" || fs.NArg() != 1 {
+			return o, errors.New("provide a single source directory and put flags before positional arguments")
+		}
 		o.target = fs.Arg(0)
-	}
-	if fs.NArg() > 1 {
-		return o, fmt.Errorf("unexpected positional arguments: %v", fs.Args()[1:])
 	}
 	return o, nil
 }
 
 func run(ctx context.Context, logger *log.Logger, args []string) error {
+	if len(args) >= 2 && args[0] == "dast" && args[1] == "inventory" {
+		return writeDASTInventory(args[2:], os.Stdout)
+	}
+	o, err := parseOptions(args)
+	if err != nil {
+		return err
+	}
 	envPath := os.Getenv("ANALYZER_ENV_FILE")
 	if envPath == "" {
 		envPath = ".env"
@@ -100,10 +126,6 @@ func run(ctx context.Context, logger *log.Logger, args []string) error {
 	}
 	if err := config.PrepareToolPath(); err != nil {
 		return fmt.Errorf("prepare tool path: %w", err)
-	}
-	o, err := parseOptions(args)
-	if err != nil {
-		return err
 	}
 	if o.configPath == "" {
 		o.configPath = os.Getenv("ANALYZER_CONFIG")
@@ -119,8 +141,9 @@ func run(ctx context.Context, logger *log.Logger, args []string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	sandboxEnabled := config.EnvBool("ANALYZER_SANDBOX_ENABLED", cfg.Sandbox.Enabled)
 	scanner.ConfigureSandbox(scanner.SandboxConfig{
-		Enabled:        config.EnvBool("ANALYZER_SANDBOX_ENABLED", cfg.Sandbox.Enabled),
+		Enabled:        sandboxEnabled,
 		NetworkDefault: cfg.Sandbox.NetworkDefault,
 		Memory:         cfg.Sandbox.Memory,
 		CPUs:           cfg.Sandbox.CPUs,
@@ -128,11 +151,22 @@ func run(ctx context.Context, logger *log.Logger, args []string) error {
 		Images:         cfg.Sandbox.Images,
 		NetworkAllow:   toSet(cfg.Sandbox.NetworkAllow),
 	})
-	if o.target == "" {
+	if o.target == "" && !o.dastOnly {
 		o.target = cfg.Analyzer.TargetPath
 	}
-	if o.target == "" {
-		return errors.New("usage: analyzer <target-path> or analyzer --target <path>")
+	hasDAST := o.dastURL != "" || o.dastTargets != ""
+	if o.dastOnly && (o.target != "" || o.containerImage != "") {
+		return errors.New("dast mode only accepts web targets")
+	}
+	if o.target == "" && !hasDAST {
+		return errors.New("provide a source directory with --target or web targets with --dast-url or --dast-targets")
+	}
+	if o.dastSession != "" && !o.dastOnly {
+		return errors.New("use the dast subcommand for an authenticated scan")
+	}
+	hasSource := o.target != ""
+	if !hasSource && (o.sbomFormat != "" || o.githubActions || o.gitlabCI || o.jenkins || o.preCommit) {
+		return errors.New("SBOM and integration generation require a source directory")
 	}
 	if o.output == "" {
 		o.output = cfg.Analyzer.OutputPath
@@ -159,20 +193,23 @@ func run(ctx context.Context, logger *log.Logger, args []string) error {
 	if o.dbPath == "" {
 		o.dbPath = cfg.Storage.DatabasePath
 	}
-	if o.sbomFormat == "" && cfg.SBOM.Generate {
+	if hasSource && o.sbomFormat == "" && cfg.SBOM.Generate {
 		o.sbomFormat = cfg.SBOM.Format
 	}
 	o.track = o.track || cfg.Storage.Enabled
-	target, err := filepath.Abs(o.target)
-	if err != nil {
-		return err
-	}
-	info, err := os.Stat(target)
-	if err != nil {
-		return fmt.Errorf("invalid target: %w", err)
-	}
-	if !info.IsDir() {
-		return errors.New("target must be a directory")
+	var target string
+	if hasSource {
+		target, err = filepath.Abs(o.target)
+		if err != nil {
+			return err
+		}
+		info, err := os.Lstat(target)
+		if err != nil {
+			return fmt.Errorf("invalid target: %w", err)
+		}
+		if !info.IsDir() {
+			return errors.New("target must be a directory")
+		}
 	}
 	started := time.Now()
 	var policy *policies.Policy
@@ -182,33 +219,72 @@ func run(ctx context.Context, logger *log.Logger, args []string) error {
 			return fmt.Errorf("load policy: %w", err)
 		}
 	}
-	if err = generateIntegrations(logger, target, o, cfg); err != nil {
-		return err
-	}
-	ld := detector.NewLanguageDetector(target)
-	languages, err := ld.DetectLanguages()
-	if err != nil {
-		return fmt.Errorf("detect languages: %w", err)
-	}
-	logger.Printf("detected languages: %s", summarizeLanguages(languages))
-	autoInstall := config.EnvBool("ANALYZER_AUTO_INSTALL", false)
-	aiEnabled := config.EnvBool("ANALYZER_AI_ENABLED", cfg.Validator.EnableAI)
-	logger.Printf("environment ready: auto-install=%t ai-enabled=%t ai-provider=%s", autoInstall, aiEnabled, effectiveAIProvider(cfg))
-	setup := &agent.SetupAgent{Timeout: time.Duration(cfg.SAST.Timeout) * time.Second, AllowInstall: autoInstall, Logger: logger}
-	if parsed, e := setup.ParseREADME(filepath.Join(target, "README.md")); e == nil {
-		if e = setup.AutoInstallAndRun(ctx, parsed); e != nil {
-			logger.Printf("README setup skipped: %v", e)
-		}
-	}
 	var findings []models.Finding
-	if cfg.SAST.Enabled {
-		sast := &agent.SASTAgent{Timeout: time.Duration(cfg.SAST.Timeout) * time.Second, Logger: logger, MaxWorkers: cfg.Validator.MaxWorkers, AutoInstall: autoInstall}
-		findings, err = sast.RunMultiLanguageSASTScan(ctx, target, languages)
-		if err != nil {
-			logger.Printf("SAST degraded: %v", err)
+	var incompleteChecks []string
+	var languages map[string]detector.LanguageInfo
+	var dastTarget string
+	var dastEndpoints []models.DASTEndpoint
+	var dastErr error
+	if hasDAST {
+		results, e := runDAST(ctx, o, time.Duration(cfg.DAST.TimeoutSeconds)*time.Second)
+		if e != nil {
+			return fmt.Errorf("DAST failed: %w", e)
+		}
+		dastTarget = dastReportTarget(results)
+		failed := 0
+		for _, result := range results {
+			dastEndpoints = append(dastEndpoints, *result.Endpoint)
+			findings = append(findings, result.Findings...)
+			if result.Endpoint.Error != "" {
+				failed++
+			}
+		}
+		if failed > 0 {
+			incompleteChecks = append(incompleteChecks, "baseline-dast")
+			logger.Printf("DAST completed %d of %d endpoint checks", len(results)-failed, len(results))
+		}
+		if failed == len(results) {
+			dastErr = errors.New("DAST completed no endpoint checks")
 		}
 	}
-	if cfg.SecretDetection.Enabled {
+	setupRequested := hasSource && cfg.SAST.Enabled && config.EnvBool("ANALYZER_AUTO_INSTALL", false)
+	autoInstall := setupRequested && !sandboxEnabled
+	aiEnabled := hasSource && config.EnvBool("ANALYZER_AI_ENABLED", cfg.Validator.EnableAI)
+	logger.Printf("environment ready: auto-install=%t ai-enabled=%t ai-provider=%s", autoInstall, aiEnabled, effectiveAIProvider(cfg))
+	if hasSource {
+		if err = generateIntegrations(logger, target, o, cfg); err != nil {
+			return err
+		}
+		languages, err = detector.NewLanguageDetector(target).DetectLanguages()
+		if err != nil {
+			return fmt.Errorf("detect languages: %w", err)
+		}
+		logger.Printf("detected languages: %s", summarizeLanguages(languages))
+		if cfg.SAST.Enabled {
+			if setupRequested {
+				setup := &agent.SetupAgent{Timeout: time.Duration(cfg.SAST.Timeout) * time.Second, AllowInstall: true, Logger: logger}
+				readmePath := filepath.Join(target, "README.md")
+				if info, e := os.Lstat(readmePath); e == nil && info.Mode().IsRegular() {
+					if parsed, e := setup.ParseREADME(readmePath); e == nil {
+						if e = setup.AutoInstallAndRun(ctx, parsed); e != nil {
+							logger.Printf("README setup skipped: %v", e)
+						}
+					}
+				}
+			}
+			sast := &agent.SASTAgent{Timeout: time.Duration(cfg.SAST.Timeout) * time.Second, Logger: logger, MaxWorkers: cfg.Validator.MaxWorkers, AutoInstall: autoInstall}
+			sourceFindings, skipped, e := sast.ScanWithCoverage(ctx, target, languages)
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if e != nil {
+				logger.Printf("SAST degraded: %v", e)
+			}
+			findings = append(findings, sourceFindings...)
+			incompleteChecks = append(incompleteChecks, skipped...)
+		}
+	}
+	if hasSource && cfg.SecretDetection.Enabled {
 		sd := scanner.NewSecretDetector()
 		sd.EntropyThreshold = cfg.SecretDetection.HighEntropyThreshold
 		sd.ExcludePaths = append(sd.ExcludePaths, cfg.SecretDetection.ExcludePaths...)
@@ -218,21 +294,13 @@ func run(ctx context.Context, logger *log.Logger, args []string) error {
 		}
 		findings = append(findings, secrets...)
 	}
-	if o.dastURL != "" {
-		dast := scanner.BaselineDAST{Timeout: time.Duration(cfg.DAST.TimeoutSeconds) * time.Second, MaxBodyBytes: cfg.DAST.MaxBodyBytes}
-		result, e := dast.Scan(ctx, o.dastURL)
-		if e != nil {
-			return fmt.Errorf("DAST failed: %w", e)
-		} else {
-			findings = append(findings, result.Findings...)
-		}
-	}
 	if o.containerImage != "" {
 		cs := scanner.NewContainerScanner()
 		cs.Scanner = cfg.Container.Scanner
 		containerFindings, e := cs.Scan(ctx, o.containerImage)
 		if e != nil {
 			logger.Printf("container scan degraded: %v", e)
+			incompleteChecks = append(incompleteChecks, "container")
 		} else {
 			findings = append(findings, containerFindings...)
 		}
@@ -283,7 +351,7 @@ func run(ctx context.Context, logger *log.Logger, args []string) error {
 		}
 	}
 	var zeros []models.Finding
-	if cfg.ZeroDayDetection.Enable {
+	if hasSource && cfg.ZeroDayDetection.Enable {
 		zeros, err = agent.DetectZeroDayPatterns(ctx, target)
 		if err != nil {
 			return err
@@ -333,26 +401,15 @@ func run(ctx context.Context, logger *log.Logger, args []string) error {
 			complianceReports = append(complianceReports, cm.GenerateReport(findings, framework))
 		}
 	}
+	exporter := reporter.NewReportExporter()
 	if o.sbomFormat != "" {
 		bom, e := sbom.NewSBOMGenerator().GenerateSBOM(target, o.sbomFormat)
 		if e != nil {
 			return fmt.Errorf("generate SBOM: %w", e)
 		}
-		b, _ := json.MarshalIndent(bom, "", "  ")
-		name := "sbom.cyclonedx.json"
-		if strings.HasPrefix(strings.ToLower(o.sbomFormat), "spdx") {
-			name = "sbom.spdx.json"
-		} else if strings.Contains(strings.ToLower(o.sbomFormat), "xml") {
-			b, _ = xml.MarshalIndent(bom, "", "  ")
-			b = append([]byte(xml.Header), b...)
-			name = "sbom.cyclonedx.xml"
-		}
-		name = filepath.Join(filepath.Dir(o.output), name)
-		if e = os.MkdirAll(filepath.Dir(name), 0700); e != nil {
-			return e
-		}
-		if e = os.WriteFile(name, b, 0600); e != nil {
-			return e
+		name, e := exporter.ExportSBOM(bom, o.sbomFormat, filepath.Dir(o.output))
+		if e != nil {
+			return fmt.Errorf("export SBOM: %w", e)
 		}
 		logger.Printf("wrote %s", name)
 	}
@@ -368,15 +425,22 @@ func run(ctx context.Context, logger *log.Logger, args []string) error {
 	} else {
 		sort.SliceStable(findings, func(i, j int) bool { return rank(findings[i].Severity) > rank(findings[j].Severity) })
 	}
+	reportTarget, reportLanguage := target, summarizeLanguages(languages)
+	if !hasSource {
+		reportTarget, reportLanguage = dastTarget, "web"
+	}
 	var bountyBundle *models.BountyBundle
 	if cfg.BugBounty.Enabled {
 		platform, programName := bountySelection(o.bountyProgram)
-		bountyReporter := reporter.BugBountyReporter{Options: reporter.BountyReporterOptions{Platform: platform, ProgramName: programName, Target: target, Programs: cfg.BugBounty.BountyPrograms, POCFormats: cfg.BugBounty.IncludePOCFormats, MinSeverity: parseSeverity(cfg.BugBounty.SubmissionQualityChecks.MinSeverityLevel)}}
+		bountyReporter := reporter.BugBountyReporter{Options: reporter.BountyReporterOptions{Platform: platform, ProgramName: programName, Target: reportTarget, Programs: cfg.BugBounty.BountyPrograms, POCFormats: cfg.BugBounty.IncludePOCFormats, MinSeverity: parseSeverity(cfg.BugBounty.SubmissionQualityChecks.MinSeverityLevel)}}
 		bundle := bountyReporter.BuildBundle(findings, businessReport)
 		bountyBundle = &bundle
 	}
-	report := models.Report{ID: fmt.Sprintf("scan-%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(), TargetPath: target, Language: summarizeLanguages(languages), Findings: findings, ZeroDayFindings: zeros, TotalFindings: len(findings), TokenUsed: tokenUsed, Duration: time.Since(started).String(), ComplianceReports: complianceReports, BusinessReport: businessReport, BountyBundle: bountyBundle}
+	report := models.Report{ID: fmt.Sprintf("scan-%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(), TargetPath: reportTarget, DASTTargetURL: dastTarget, DASTEndpoints: dastEndpoints, DASTSession: o.dastSession, IncompleteChecks: incompleteChecks, Language: reportLanguage, Findings: findings, TotalFindings: len(findings), TokenUsed: tokenUsed, Duration: time.Since(started).String(), ComplianceReports: complianceReports, BusinessReport: businessReport, BountyBundle: bountyBundle}
 	for _, f := range findings {
+		if f.SourceTool == "zeroday-detector" && f.IsZeroDay {
+			report.ZeroDayFindings = append(report.ZeroDayFindings, f)
+		}
 		if f.Severity == models.SeverityCritical {
 			report.CriticalCount++
 		}
@@ -384,10 +448,14 @@ func run(ctx context.Context, logger *log.Logger, args []string) error {
 			report.HighCount++
 		}
 	}
-	if integrations.DetectGitRepo(target) {
+	if hasSource && integrations.DetectGitRepo(target) {
 		report.GitBranch = integrations.GetCurrentBranch(target)
 		report.GitCommit = integrations.GetCommitHash(target)
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	var comparisonErr error
 	if o.track || o.compareID != "" {
 		db, e := storage.OpenSQLite(o.dbPath)
 		if e != nil {
@@ -397,18 +465,18 @@ func run(ctx context.Context, logger *log.Logger, args []string) error {
 		if _, e = db.SaveReport(ctx, report); e != nil {
 			return fmt.Errorf("save report history: %w", e)
 		}
-		if e = db.PruneOlderThan(ctx, cfg.Storage.RetentionDays); e != nil {
-			logger.Printf("history retention cleanup failed: %v", e)
-		}
 		if o.compareID != "" {
 			comparison, e := db.CompareReports(ctx, o.compareID, report.ID)
 			if e != nil {
-				return fmt.Errorf("compare reports: %w", e)
+				comparisonErr = fmt.Errorf("compare reports: %w", e)
+			} else {
+				logger.Printf("history comparison: new=%d fixed=%d regressions=%d", len(comparison.NewFindings), len(comparison.FixedFindings), len(comparison.Regressions))
 			}
-			logger.Printf("history comparison: new=%d fixed=%d regressions=%d", len(comparison.NewFindings), len(comparison.FixedFindings), len(comparison.Regressions))
+		}
+		if e = db.PruneOlderThan(ctx, cfg.Storage.RetentionDays); e != nil {
+			logger.Printf("history retention cleanup failed: %v", e)
 		}
 	}
-	exporter := reporter.NewReportExporter()
 	for _, format := range splitFormats(o.formats) {
 		path := outputForFormat(o.output, format)
 		if e := exporter.Export(report, format, path); e != nil {
@@ -416,8 +484,83 @@ func run(ctx context.Context, logger *log.Logger, args []string) error {
 		}
 		logger.Printf("wrote %s", path)
 	}
-	fmt.Printf("Scan complete: id=%s total=%d critical=%d high=%d zero_day=%d tokens=%d duration=%s\n", report.ID, report.TotalFindings, report.CriticalCount, report.HighCount, len(zeros), tokenUsed, report.Duration)
-	return nil
+	if len(incompleteChecks) > 0 {
+		logger.Printf("scan incomplete: %s", strings.Join(incompleteChecks, ", "))
+	}
+	fmt.Printf("Scan finished: id=%s total=%d critical=%d high=%d zero_day=%d tokens=%d duration=%s\n", report.ID, report.TotalFindings, report.CriticalCount, report.HighCount, len(report.ZeroDayFindings), tokenUsed, report.Duration)
+	return errors.Join(comparisonErr, dastErr)
+}
+
+func runDAST(ctx context.Context, o options, timeout time.Duration) ([]models.ToolOutput, error) {
+	if o.dastURL != "" && o.dastTargets != "" {
+		return nil, errors.New("choose either --dast-url or --dast-targets")
+	}
+	origin, paths := "", []string{o.dastURL}
+	if o.dastTargets != "" {
+		manifest, err := scanner.ReadDASTManifest(o.dastTargets)
+		if err != nil {
+			return nil, err
+		}
+		origin, paths = manifest.Origin, manifest.Paths
+	}
+	var session string
+	switch o.dastSession {
+	case "":
+	case "bearer":
+		session = os.Getenv("VULNFORGE_DAST_BEARER_TOKEN")
+	case "cookie":
+		session = os.Getenv("VULNFORGE_DAST_COOKIE")
+	default:
+		return nil, errors.New("DAST session must be bearer or cookie")
+	}
+	return (scanner.BaselineDAST{Timeout: timeout}).ScanTargets(ctx, origin, paths, scanner.DASTRunOptions{
+		Interval: o.dastInterval, MaxRequests: o.dastMaxRequests, Direct: o.dastDirect, SessionKind: o.dastSession, Session: session,
+	})
+}
+
+func dastReportTarget(results []models.ToolOutput) string {
+	target := results[0].TargetURL
+	if len(results) == 1 {
+		return target
+	}
+	// ScanTargets has already validated and redacted all targets.
+	u, _ := url.Parse(target)
+	return (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: "/"}).String()
+}
+
+func writeDASTInventory(args []string, output io.Writer) error {
+	fs := flag.NewFlagSet("analyzer dast inventory", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	origin := fs.String("origin", "", "authorized origin for the manifest")
+	openapi := fs.String("openapi", "", "local OpenAPI YAML or JSON file")
+	har := fs.String("har", "", "local HTTP Archive file")
+	burp := fs.String("burp", "", "local Burp XML item export")
+	sitemap := fs.String("sitemap", "", "local XML sitemap URL set")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	var format, path string
+	for name, value := range map[string]string{"openapi": *openapi, "har": *har, "burp": *burp, "sitemap": *sitemap} {
+		if value != "" {
+			if format != "" {
+				return errors.New("choose one inventory input")
+			}
+			format, path = name, value
+		}
+	}
+	if fs.NArg() != 0 || *origin == "" || format == "" {
+		return errors.New("provide --origin and one of --openapi, --har, --burp, or --sitemap")
+	}
+	manifest, err := scanner.InventoryDASTPaths(*origin, path, format)
+	if err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(manifest)
+	if err != nil {
+		return err
+	}
+	_, err = output.Write(data)
+	return err
 }
 
 func newAIClient(ctx context.Context, cfg config.Config) (validationClient, error) {

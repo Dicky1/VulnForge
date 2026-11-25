@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"github.com/example/sast-dast-analyzer/internal/models"
+	"maps"
 	"os"
 
 	"gopkg.in/yaml.v2"
@@ -230,6 +231,7 @@ func Load(path string) (Config, error) {
 	c := Default()
 	defaultMultipliers := c.FinancialMultipliers
 	defaultPenalties := c.CompliancePenalties
+	defaultSandboxImages := c.Sandbox.Images
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return c, nil
@@ -239,24 +241,15 @@ func Load(path string) (Config, error) {
 	}
 	c.FinancialMultipliers = nil
 	c.CompliancePenalties = nil
+	c.Sandbox.Images = nil
 	if err := yaml.UnmarshalStrict(b, &c); err != nil {
 		return c, err
 	}
-	if c.FinancialMultipliers == nil {
-		c.FinancialMultipliers = map[string]float64{}
-	}
-	for key, value := range defaultMultipliers {
-		if _, found := c.FinancialMultipliers[key]; !found {
-			c.FinancialMultipliers[key] = value
-		}
-	}
-	if c.CompliancePenalties == nil {
-		c.CompliancePenalties = map[string]float64{}
-	}
-	for key, value := range defaultPenalties {
-		if _, found := c.CompliancePenalties[key]; !found {
-			c.CompliancePenalties[key] = value
-		}
-	}
+	maps.Copy(defaultMultipliers, c.FinancialMultipliers)
+	maps.Copy(defaultPenalties, c.CompliancePenalties)
+	maps.Copy(defaultSandboxImages, c.Sandbox.Images)
+	c.FinancialMultipliers = defaultMultipliers
+	c.CompliancePenalties = defaultPenalties
+	c.Sandbox.Images = defaultSandboxImages
 	return c, nil
 }

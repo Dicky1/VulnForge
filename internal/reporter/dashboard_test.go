@@ -3,6 +3,7 @@ package reporter
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -29,7 +30,11 @@ func TestDashboardRendersPieAndEscapesFindings(t *testing.T) {
 	if strings.Contains(html, "<script>alert(1)</script>") {
 		t.Fatal("finding title was not HTML-escaped")
 	}
-	if info, err := os.Stat(path); err == nil && info.Mode().Perm()&0o077 != 0 {
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
 		t.Fatalf("report is readable by other users: %v", info.Mode().Perm())
 	}
 }

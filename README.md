@@ -73,8 +73,42 @@ Or on Linux / macOS:
 ./analyzer --target /path/to/project --output report.json
 ```
 
-### 2. Multi-Format & Passive DAST Scan
-Scan source code alongside an authorized running staging web endpoint, exporting to multiple formats simultaneously:
+### 2. Passive DAST Scan
+Check the HTTPS, headers, and cookie attributes observed at an authorized endpoint:
+
+```powershell
+.\analyzer.exe --dast-url "https://staging.example.com" --output report.json
+```
+
+A URL-only scan uses built-in HTTP checks without AI validation. Keep `analyzer.target_path` empty in the selected config for this mode. The report stores the endpoint without its query or fragment.
+
+Use the `dast` subcommand to select web-only mode even when the config has a source target. To check multiple endpoints, save an explicit list in `endpoints.yaml`.
+
+```yaml
+origin: https://staging.example.com
+paths:
+  - /
+  - /login
+  - /api/health
+```
+
+```powershell
+go run ./cmd/analyzer dast --dast-targets endpoints.yaml --export-format json,html --output report.json
+```
+
+The manifest accepts up to 100 paths under one origin. The HTTP client sends GET requests sequentially, honors the configured timeout, and limits redirects to the original origin or a standard HTTP-to-HTTPS upgrade. `--dast-interval` defaults to `250ms`, and `--dast-max-requests` defaults to 100. Both apply across the entire run and include redirects. An HTTP 429 response stops further requests in the run. The client honors `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY`. Use `--dast-no-proxy` for direct connections.
+
+For authenticated staging checks, supply an existing session with `--dast-session cookie` and `VULNFORGE_DAST_COOKIE` (a Cookie header value), or `--dast-session bearer` and `VULNFORGE_DAST_BEARER_TOKEN` (the token alone). Use the `dast` subcommand and an HTTPS origin. Reports include endpoint outcomes and evidence such as status, header name, and missing attributes per cookie. Credentials, cookie values, raw headers, query strings, and response bodies are excluded. Keep sensitive data out of endpoint path segments. Authenticated redirects to a different path show a redacted final path.
+
+Generate a candidate manifest offline from a local OpenAPI document, HAR file, Burp XML item export, or sitemap URL set.
+
+```powershell
+go run ./cmd/analyzer dast inventory --origin https://staging.example.com --openapi openapi.yaml
+```
+
+The inventory command prints YAML to review and save. Use `--har`, `--burp`, or `--sitemap` for those inputs. Imported paths drop query strings, and captured GET URLs must match the selected origin. Review path segments before saving or sharing the generated manifest.
+
+Add a source directory to combine static and runtime findings in the same report:
 
 ```powershell
 .\analyzer.exe --target "C:\path\to\project" `
@@ -106,6 +140,8 @@ Track scan history in SQLite and compare against a previous scan ID to detect ne
 .\analyzer.exe --target "C:\path\to\project" --track-history --compare-with scan-1718000000000
 ```
 
+Use the same source directory, DAST endpoint list, and session mode for both runs. The CLI logs incomplete checks and includes them in JSON (`incomplete_checks`), HTML, PDF, XML, and SARIF. Partial scans still produce reports. A history comparison involving an incomplete scan returns an error after exporting the current report. If no DAST endpoint could be checked, the CLI exports its outcomes and then exits with an error.
+
 ### 5. SBOM & Container Image Scanning
 Generate CycloneDX or SPDX Software Bill of Materials, and scan container images via Trivy/Grype:
 
@@ -126,7 +162,7 @@ Generate CycloneDX or SPDX Software Bill of Materials, and scan container images
 | `--output` | `string` | Base path for exported reports (default: `report.json`). |
 | `--export-format` | `string` | Comma-separated: `json,html,dashboard,pdf,sarif,xml,csv,bounty-report`. |
 | `--policy` | `string` | Path to custom YAML security policy file. |
-| `--dast-url` | `string` | Authorized runtime URL for passive baseline HTTP scanning. |
+| `--dast-url` | `string` | Authorized runtime URL for passive baseline HTTP scanning. May be used by itself. |
 | `--track-history` | `bool` | Store scan results in the SQLite database for historical tracking. |
 | `--database` | `string` | Custom path to SQLite database (default from `config.yaml`). |
 | `--compare-with` | `string` | Historical report ID to run differential regression analysis against. |

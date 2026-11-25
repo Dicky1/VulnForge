@@ -35,7 +35,7 @@ func TestRunScannerSandboxedFallsBackWhenDisabled(t *testing.T) {
 	}
 }
 
-func TestRunScannerSandboxedFallsBackWhenNoImageConfigured(t *testing.T) {
+func TestRunScannerSandboxedFailsClosedWhenNoImageConfigured(t *testing.T) {
 	ConfigureSandbox(SandboxConfig{Enabled: true, Images: map[string]string{"semgrep": "returntocorp/semgrep:1.78.0"}})
 	defer ConfigureSandbox(SandboxConfig{})
 	_, ranSandboxed, err := RunScannerSandboxed(context.Background(), time.Second, "/target", nil, "bandit", "-r", "/target")
@@ -73,5 +73,17 @@ func TestNetworkPolicyDefaultsToNoneAndHonorsAllowlist(t *testing.T) {
 	}
 	if got := networkPolicy("cargo-audit"); got != "bridge" {
 		t.Fatalf("expected the allowlisted tool to get network access, got %q", got)
+	}
+}
+
+func TestRunScannerSandboxedFailsClosedWithoutDocker(t *testing.T) {
+	ConfigureSandbox(SandboxConfig{Enabled: true, Images: map[string]string{"bandit": "test-image"}})
+	defer ConfigureSandbox(SandboxConfig{})
+	unavailable := false
+	SetDockerReadyOverrideForTests(&unavailable)
+	defer SetDockerReadyOverrideForTests(nil)
+	_, handled, err := RunScannerSandboxed(context.Background(), time.Second, "/target", nil, "bandit")
+	if !handled || err == nil {
+		t.Fatalf("expected isolation failure, got handled=%v err=%v", handled, err)
 	}
 }

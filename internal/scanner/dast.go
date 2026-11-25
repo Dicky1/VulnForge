@@ -18,55 +18,105 @@ type BaselineDAST struct {
 	MaxBodyBytes int64
 }
 
+// sameDASTScope only permits redirects within the explicitly selected origin,
+// plus the standard HTTP-to-HTTPS upgrade on the same hostname. This prevents
+// an in-scope application from redirecting the scanner to an unrelated host,
+// port, or a downgraded HTTP endpoint.
+func sameDASTScope(original, next *url.URL) bool {
+	if !strings.EqualFold(original.Hostname(), next.Hostname()) || next.User != nil {
+		return false
+	}
+	if original.Scheme == next.Scheme {
+		return effectiveDASTPort(original) == effectiveDASTPort(next)
+	}
+	return original.Scheme == "http" && next.Scheme == "https" &&
+		effectiveDASTPort(original) == "80" && effectiveDASTPort(next) == "443"
+}
+
+func effectiveDASTPort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	if u.Scheme == "https" {
+		return "443"
+	}
+	return "80"
+}
+
 func (d BaselineDAST) Scan(ctx context.Context, rawURL string) (models.ToolOutput, error) {
+	out := models.ToolOutput{Tool: "baseline-dast", ExitCode: -1}
 	u, err := url.ParseRequestURI(rawURL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return models.ToolOutput{Tool: "baseline-dast", ExitCode: -1}, fmt.Errorf("invalid DAST URL")
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil {
+		return out, fmt.Errorf("invalid DAST URL: use an explicit http(s) URL without embedded credentials")
+	}
+	timeout := d.Timeout
+	if timeout <= 0 {
+		timeout = 15 * time.Second
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
-	client := &http.Client{Timeout: d.Timeout, Transport: transport, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Timeout: timeout, Transport: transport, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 5 {
-			return fmt.Errorf("too many redirects")
+			return fmt.Errorf("DAST redirect limit exceeded")
+		}
+		if !sameDASTScope(u, req.URL) {
+			return fmt.Errorf("DAST redirect left the authorized origin")
 		}
 		return nil
 	}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
-		return models.ToolOutput{Tool: "baseline-dast", ExitCode: -1}, err
+		return out, err
 	}
-	req.Header.Set("User-Agent", "sast-dast-analyzer/1.0 passive-security-check")
+	req.Header.Set("User-Agent", "VulnForge/1.0 passive-security-check")
 	resp, err := client.Do(req)
 	if err != nil {
-		return models.ToolOutput{Tool: "baseline-dast", ExitCode: -1}, err
+		return out, err
 	}
 	defer resp.Body.Close()
-	out := models.ToolOutput{Tool: "baseline-dast", ExitCode: 0}
+	out.ExitCode = 0
+
+	// The query string may contain session keys or tokens. Never include it in
+	// findings, logs, or exported reports.
+	reportURL := *u
+	reportURL.RawQuery = ""
+	reportURL.ForceQuery = false
+	reportURL.Fragment = ""
 	add := func(id, title, desc string, sev models.Severity) {
-		f := makeFinding("baseline-dast", id, u.String(), 0, desc, string(sev), "")
+		f := makeFinding("baseline-dast", id, reportURL.String(), 0, desc, string(sev), "")
 		f.Title = title
 		f.Language = "web"
 		f.Remediation = "Set the header at the reverse proxy or application layer and verify it on every response."
 		out.Findings = append(out.Findings, f)
 	}
-	if u.Scheme != "https" {
+	if resp.Request.URL.Scheme != "https" {
 		add("DAST-HTTPS", "HTTPS not enforced", "The endpoint is reachable over plaintext HTTP.", models.SeverityHigh)
 	}
 	checks := []struct {
 		header, id, title string
 		sev               models.Severity
-	}{{"Content-Security-Policy", "DAST-CSP", "Missing Content-Security-Policy", models.SeverityMedium}, {"X-Content-Type-Options", "DAST-NOSNIFF", "Missing X-Content-Type-Options", models.SeverityLow}, {"Referrer-Policy", "DAST-REFERRER", "Missing Referrer-Policy", models.SeverityLow}}
+	}{
+		{"Content-Security-Policy", "DAST-CSP", "Missing Content-Security-Policy", models.SeverityMedium},
+		{"X-Content-Type-Options", "DAST-NOSNIFF", "Missing X-Content-Type-Options", models.SeverityLow},
+		{"Referrer-Policy", "DAST-REFERRER", "Missing Referrer-Policy", models.SeverityLow},
+	}
 	for _, c := range checks {
 		if resp.Header.Get(c.header) == "" {
 			add(c.id, c.title, "Response is missing the "+c.header+" header.", c.sev)
 		}
 	}
-	if cookie := resp.Header.Values("Set-Cookie"); u.Scheme == "https" {
-		for _, v := range cookie {
-			low := strings.ToLower(v)
-			if !strings.Contains(low, "secure") || !strings.Contains(low, "httponly") {
-				add("DAST-COOKIE", "Cookie lacks security attributes", "Set-Cookie lacks Secure or HttpOnly: "+v, models.SeverityMedium)
-				break
+	if resp.Request.URL.Scheme == "https" && resp.Header.Get("Strict-Transport-Security") == "" {
+		add("DAST-HSTS", "Missing Strict-Transport-Security", "HTTPS response is missing the HSTS header.", models.SeverityLow)
+	}
+	if resp.Request.URL.Scheme == "https" {
+		for _, cookie := range resp.Cookies() {
+			if !cookie.Secure || !cookie.HttpOnly {
+				// Never embed the raw Set-Cookie header or cookie value in findings.
+				add("DAST-COOKIE", "Cookie lacks security attributes", fmt.Sprintf("Cookie %q lacks Secure or HttpOnly.", cookie.Name), models.SeverityMedium)
+			}
+			if cookie.SameSite == http.SameSiteDefaultMode {
+				add("DAST-SAMESITE", "Cookie has no SameSite attribute", fmt.Sprintf("Cookie %q has no explicit SameSite policy.", cookie.Name), models.SeverityLow)
 			}
 		}
 	}

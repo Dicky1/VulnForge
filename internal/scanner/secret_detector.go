@@ -59,11 +59,11 @@ func (d *SecretDetector) Scan(ctx context.Context, target string) ([]models.Find
 			}
 			return nil
 		}
-		if d.excluded(rel) || !secretSource(path) {
+		if !entry.Type().IsRegular() || d.excluded(rel) || !secretSource(path) {
 			return nil
 		}
 		info, e := entry.Info()
-		if e != nil || info.Size() > 2<<20 {
+		if e != nil || !info.Mode().IsRegular() || info.Size() > 2<<20 {
 			return nil
 		}
 		f, e := os.Open(path)
@@ -109,7 +109,8 @@ func (d *SecretDetector) Scan(ctx context.Context, target string) ([]models.Find
 func (d *SecretDetector) excluded(path string) bool {
 	p := filepath.ToSlash(path)
 	for _, x := range d.ExcludePaths {
-		if strings.Contains(p, strings.Trim(filepath.ToSlash(x), "/")) {
+		pattern := strings.Trim(filepath.ToSlash(x), "/")
+		if pattern != "" && strings.Contains("/"+p+"/", "/"+pattern+"/") {
 			return true
 		}
 	}

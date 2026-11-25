@@ -43,3 +43,25 @@ func TestSecretDetectorScansSolidityFiles(t *testing.T) {
 		t.Fatalf("expected the secret in the .sol file to be detected, got %d findings", len(got))
 	}
 }
+
+func TestSecretDetectorSkipsSymlinks(t *testing.T) {
+	root := t.TempDir()
+	external := filepath.Join(t.TempDir(), "private.go")
+	if err := os.WriteFile(external, []byte(`package x; const key="AKIA1234567890ABCDEF"`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, filepath.Join(root, "linked.go")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	got, err := NewSecretDetector().Scan(context.Background(), root)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("outside-target link must not be scanned: %v, %v", got, err)
+	}
+}
+
+func TestSecretDetectorExclusionsMatchComponents(t *testing.T) {
+	d := NewSecretDetector()
+	if d.excluded("vendorized/app.go") || !d.excluded("src/vendor/app.go") {
+		t.Fatal("exclusions must match complete path components")
+	}
+}

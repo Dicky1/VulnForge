@@ -212,7 +212,12 @@ func buildLanguageAwarePrompt(in []models.Finding) string {
 		fmt.Fprintf(&b, "- %s (finding indexes %v): focus on %s.\n", lang, indexes, contexts[lang])
 	}
 	b.WriteString("Return ONLY a JSON array with keys finding_index, is_valid, confidence, reason, exploitation_feasibility, zero_day_potential. is_valid and zero_day_potential MUST be JSON boolean literals true or false, never numbers or explanatory text. confidence MUST be a number from 0 to 1. Preserve the original finding indexes and do not use markdown. Findings:\n")
-	payload, _ := json.Marshal(in)
+	safe := make([]models.Finding, len(in))
+	for i, finding := range in {
+		safe[i] = finding
+		safe[i].CodeSnippet = "[omitted]"
+	}
+	payload, _ := json.Marshal(safe)
 	b.Write(payload)
 	return b.String()
 }

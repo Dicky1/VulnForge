@@ -39,8 +39,8 @@ func TestRunScannerSandboxedFailsClosedWhenNoImageConfigured(t *testing.T) {
 	ConfigureSandbox(SandboxConfig{Enabled: true, Images: map[string]string{"semgrep": "returntocorp/semgrep:1.78.0"}})
 	defer ConfigureSandbox(SandboxConfig{})
 	_, ranSandboxed, err := RunScannerSandboxed(context.Background(), time.Second, "/target", nil, "bandit", "-r", "/target")
-	if ranSandboxed || err != nil {
-		t.Fatalf("expected a clean fallback signal when no image is configured for the tool, got ranSandboxed=%v err=%v", ranSandboxed, err)
+	if !ranSandboxed || err == nil {
+		t.Fatalf("expected fail-closed isolation error, got ranSandboxed=%v err=%v", ranSandboxed, err)
 	}
 }
 

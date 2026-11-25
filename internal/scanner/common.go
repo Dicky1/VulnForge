@@ -3,6 +3,7 @@ package scanner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"time"
@@ -18,10 +19,17 @@ func run(ctx context.Context, timeout time.Duration, dir, name string, args ...s
 }
 
 func runWithEnv(ctx context.Context, timeout time.Duration, dir string, env []string, name string, args ...string) (commandResult, error) {
-	// Prefer running the tool inside its sandboxed Docker image when one is
-	// configured and Docker is reachable; fall through to local execution
-	// otherwise (today's behavior, unchanged).
-	if res, ranSandboxed, err := RunScannerSandboxed(ctx, timeout, dir, env, name, args...); ranSandboxed {
+	// Once sandbox mode is explicitly enabled, never silently execute a
+	// scanner on the host. Some scanners parse or execute untrusted project
+	// files and require a clear trust boundary.
+	if sandbox.Enabled {
+		if sandbox.Images[name] == "" {
+			return commandResult{exitCode: -1}, fmt.Errorf("sandbox enabled but no image configured for %q", name)
+		}
+		res, ran, err := RunScannerSandboxed(ctx, timeout, dir, env, name, args...)
+		if !ran {
+			return commandResult{exitCode: -1}, fmt.Errorf("sandbox enabled but Docker is unavailable for %q", name)
+		}
 		return res, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -35,13 +43,9 @@ func runWithEnv(ctx context.Context, timeout time.Duration, dir string, env []st
 	return interpretExecResult(ctx, b, err)
 }
 
-// interpretExecResult normalizes a finished command's output/error the way
-// every exec-based scanner already expects: a deadline is surfaced as an
-// error, a clean run or a non-zero exit both return the captured output with
-// the matching exit code, and any other failure (e.g. binary not found) is
-// returned as an error.
+// interpretExecResult normalizes scanner output and errors.
 func interpretExecResult(ctx context.Context, b []byte, err error) (commandResult, error) {
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+	if ctx.Err() != nil {
 		return commandResult{b, -1}, ctx.Err()
 	}
 	if err == nil {

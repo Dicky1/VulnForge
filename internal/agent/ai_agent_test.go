@@ -68,3 +68,19 @@ func TestAIValidationFallsBackToOriginalOnBatchError(t *testing.T) {
 		t.Fatal("expected finding \"bad\" from the failed batch to still be present")
 	}
 }
+
+func TestAIValidationIncompleteResponsePreservesBatch(t *testing.T) {
+	a := AIValidationAgent{Client: validationStub(`[]`), BatchSize: 10, MaxWorkers: 1, ConfidenceThreshold: .75}
+	out, err := a.ValidateFindingsInBatch(context.Background(), []models.Finding{{ID: "one"}, {ID: "two"}})
+	if err == nil || len(out) != 2 {
+		t.Fatalf("expected incomplete-response fallback, got %v, %v", out, err)
+	}
+}
+
+func TestAIPromptOmitsSensitiveEvidence(t *testing.T) {
+	f := models.Finding{ID: "one", CodeSnippet: "PRIVATE_SOURCE_MARKER", FilePath: "PRIVATE_PATH_MARKER", Description: "PRIVATE_DESCRIPTION_MARKER", Remediation: "PRIVATE_REMEDIATION_MARKER"}
+	prompt := buildLanguageAwarePrompt([]models.Finding{f})
+	if strings.Contains(prompt, "PRIVATE_") {
+		t.Fatal("sensitive evidence leaked into AI prompt")
+	}
+}

@@ -79,6 +79,9 @@ func (s *SlitherScanner) run(ctx context.Context, target, jsonPath string) (comm
 	if res, ranSandboxed, err := RunScannerSandboxedWithOutput(ctx, multiScannerTimeout, target, jsonPath, nil, s.Name(), ".", "--json", jsonPath); ranSandboxed {
 		return res, err
 	}
+	if sandbox.Enabled {
+		return commandResult{exitCode: -1}, fmt.Errorf("sandbox enabled but Slither image or Docker is unavailable")
+	}
 	return run(ctx, multiScannerTimeout, target, s.Name(), ".", "--json", jsonPath)
 }
 

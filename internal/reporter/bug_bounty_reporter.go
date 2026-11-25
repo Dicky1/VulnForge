@@ -111,10 +111,21 @@ func bountyExclusionReason(f models.Finding, target string) string {
 	return ""
 }
 func bountyRelativePath(path, target string) string {
+	// Reports can be produced on a different OS from the scanner. Normalize
+	// Windows separators even when this process is running on Unix.
+	windowsPath := strings.Contains(path, "\\") || strings.Contains(target, "\\")
+	path = strings.ReplaceAll(path, "\\", "/")
+	target = strings.ReplaceAll(target, "\\", "/")
 	if path == "" || target == "" {
 		return path
 	}
-	if rel, err := filepath.Rel(target, path); err == nil && !strings.HasPrefix(rel, "..") {
+	if windowsPath {
+		prefix := strings.TrimRight(target, "/") + "/"
+		if strings.HasPrefix(strings.ToLower(path), strings.ToLower(prefix)) {
+			return path[len(prefix):]
+		}
+	}
+	if rel, err := filepath.Rel(target, path); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return filepath.ToSlash(rel)
 	}
 	return filepath.ToSlash(path)

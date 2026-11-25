@@ -21,7 +21,7 @@ It generates comprehensive technical audits, executive management dashboards, re
   - **Containers**: Trivy or Grype integration for Docker/OCI container image scanning.
 - **Docker Container Sandboxing**: Runs untrusted target repositories and scanners inside isolated Docker containers with `--cap-drop ALL`, `--security-opt no-new-privileges:true`, `--read-only` root, resource quotas, and `--network none`.
 - **Untrusted README Protection**: Restricts auto-installation commands parsed from target repositories to strict allowlists; completely refuses execution on the host if Docker sandboxing is unavailable.
-- **AI-Powered Validation & Remediation**: Leverages Anthropic Claude or [9Router](https://github.com/decolua/9router) to filter out false positives and generate language-specific remediation code patches. Sensitive snippets are omitted (`safe.CodeSnippet = "[omitted]"`) to protect confidential code.
+- **AI-Powered Validation & Remediation**: Uses Anthropic Claude or [9Router](https://github.com/decolua/9router) for advisory triage and remediation suggestions. AI does not delete findings or establish zero-day status; source snippets and paths are omitted from the default validation prompt. Scanner titles and metadata may still contain sensitive information; disable external AI for confidential scans.
 - **Enterprise Policy Engine**: YAML-based rule enforcement supporting custom regex patterns, CWE filters, severity overrides, and suppression rules with precompiled regex caching.
 - **Historical Tracking & Regressions**: Embedded SQLite storage (`analyzer.db`) for tracking scan history, new findings, fixed issues, and severity regressions (`--compare-with`).
 - **Multi-Format Reporting**:
@@ -122,6 +122,7 @@ Generate CycloneDX or SPDX Software Bill of Materials, and scan container images
 | Flag | Type | Description |
 | :--- | :--- | :--- |
 | `--target` | `string` | Path to the source code directory to scan (or positional argument). |
+| `--config` | `string` | Config YAML path (or `ANALYZER_CONFIG`). |
 | `--output` | `string` | Base path for exported reports (default: `report.json`). |
 | `--export-format` | `string` | Comma-separated: `json,html,dashboard,pdf,sarif,xml,csv,bounty-report`. |
 | `--policy` | `string` | Path to custom YAML security policy file. |
@@ -158,7 +159,7 @@ Key environment variables:
 | `NINEROUTER_URL` | `http://localhost:20128` | Base URL for local or remote 9Router instance. |
 | `NINEROUTER_MODEL` | `cc/claude-opus-4-6` | Model ID configured in 9Router. |
 | `NINEROUTER_KEY` | `""` | Optional API key for 9Router. |
-| `ANALYZER_SANDBOX_ENABLED` | `false` | Enable Docker container isolation for scanners. |
+| `ANALYZER_SANDBOX_ENABLED` | `false` | Enable required scanner isolation; configured scanner execution fails closed if Docker or an image is unavailable. Explicit container image scanning is separate. |
 | `ANALYZER_AUTO_INSTALL` | `false` | Allow auto-installing missing scanners (strictly validated). |
 | `ANALYZER_TOOL_PATHS` | `""` | Extra paths appended to system `PATH` (separated by platform delimiter). |
 
@@ -191,10 +192,10 @@ Advanced settings such as timeouts, token budgets, scanner concurrency limits, a
 VulnForge implements defense-in-depth principles:
 1. **Command Injection Prevention**: Subprocess calls avoid shell wrappers (`sh -c` or `cmd.exe /c`), passing parameters strictly as tokenized argument slices.
 2. **Container Isolation**: Scanner subprocesses run with dropped Linux capabilities (`--cap-drop ALL`), disabled privilege escalation (`no-new-privileges`), and read-only target mounts (`/workspace:ro`).
-3. **Secret Redaction**: Detected keys, tokens, and passwords are unconditionally replaced with redacted placeholders to prevent leakage into reports or AI prompts.
+3. **Secret Redaction**: The native secret detector redacts matched source lines and passive DAST omits cookie values and query strings. Third-party scanner output is not a guarantee of complete redaction; protect report files and review them before sharing.
 4. **Data Minimization for AI**: When requesting remediation diffs, source snippets are omitted from prompts to prevent source code exfiltration to external LLMs.
 5. **CSV Formula Injection Mitigation**: All CSV exported fields are sanitized against formula injection (CWE-1236) by prepending `'` to fields starting with `=`, `+`, `-`, or `@`.
-6. **SQL Injection Immune**: Scan history transactions utilize parameterized SQL queries exclusively.
+6. **Parameterized SQL**: Scan history transactions utilize parameterized SQL queries exclusively.
 7. **XSS Protection**: HTML executive dashboards leverage Go's contextual `html/template` auto-escaping.
 
 ---
@@ -218,3 +219,8 @@ go vet ./...
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
+
+
+### Candidate validation notes
+
+This working tree is a pre-push candidate, not a validated release. See `VALIDATION.md` for test coverage, unresolved gaps, and release checks. Do not run source scanners on untrusted code outside appropriate isolation. Use only authorized targets and a trusted output directory.

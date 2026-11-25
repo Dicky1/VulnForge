@@ -208,7 +208,7 @@ func Default() Config {
 	c.Validator.EnableAI, c.Validator.ConfidenceThreshold = true, .75
 	c.Validator.BatchSize, c.Validator.MaxWorkers = 10, 4
 	c.Optimizer.MaxTokenBudget, c.Optimizer.DedupEnabled, c.Optimizer.SeverityWeighting = 5000, true, true
-	c.Optimizer.SkipPatterns = []string{"TODO", "debug", `test.*password`, "fixture"}
+	c.Optimizer.SkipPatterns = nil
 	c.ZeroDayDetection.Enable = true
 	c.ZeroDayDetection.FocusAreas = []string{"crypto", "validation", "authorization", "logic", "race_conditions"}
 	c.Sandbox.Enabled = false // opt-in: existing behavior/performance is unchanged until Docker sandboxing is turned on

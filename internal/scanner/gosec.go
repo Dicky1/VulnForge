@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"github.com/example/sast-dast-analyzer/internal/models"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -19,7 +20,10 @@ func (s *GoSecScanner) Scan(ctx context.Context, target string) (models.ToolOutp
 	}
 	var d struct {
 		Issues []struct {
-			RuleID                  string `json:"rule_id"`
+			RuleID string `json:"rule_id"`
+			CWE    struct {
+				ID string `json:"id"`
+			} `json:"cwe"`
 			File                    string `json:"file"`
 			Line                    string `json:"line"`
 			Severity, Details, Code string
@@ -29,8 +33,12 @@ func (s *GoSecScanner) Scan(ctx context.Context, target string) (models.ToolOutp
 		return out, err
 	}
 	for _, x := range d.Issues {
-		line, _ := strconv.Atoi(x.Line)
-		out.Findings = append(out.Findings, makeFinding("gosec", x.RuleID, x.File, line, x.Details, x.Severity, x.Code))
+		// gosec reports multi-line issues as a range ("12-14"); keep the start.
+		start, _, _ := strings.Cut(x.Line, "-")
+		line, _ := strconv.Atoi(strings.TrimSpace(start))
+		f := makeFinding("gosec", x.RuleID, x.File, line, x.Details, x.Severity, x.Code)
+		f.CWE = firstCWE(x.CWE.ID)
+		out.Findings = append(out.Findings, f)
 	}
 	return out, nil
 }

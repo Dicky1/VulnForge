@@ -44,6 +44,16 @@ func effectiveDASTPort(u *url.URL) string {
 }
 
 func (d BaselineDAST) Scan(ctx context.Context, rawURL string) (models.ToolOutput, error) {
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return models.ToolOutput{Tool: "baseline-dast", ExitCode: -1}, fmt.Errorf("unsupported default HTTP transport")
+	}
+	return d.scanWithTransport(ctx, rawURL, base)
+}
+
+// The caller supplies a base transport; production uses the default system
+// trust store. Tests can use a transport trusting only a local TLS fixture.
+func (d BaselineDAST) scanWithTransport(ctx context.Context, rawURL string, base *http.Transport) (models.ToolOutput, error) {
 	out := models.ToolOutput{Tool: "baseline-dast", ExitCode: -1}
 	u, err := url.ParseRequestURI(rawURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil {
@@ -53,9 +63,17 @@ func (d BaselineDAST) Scan(ctx context.Context, rawURL string) (models.ToolOutpu
 	if timeout <= 0 {
 		timeout = 15 * time.Second
 	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport := base.Clone()
 	transport.MaxResponseHeaderBytes = 1 << 20
-	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{}
+	} else {
+		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
+	}
+	if transport.TLSClientConfig.MinVersion < tls.VersionTLS12 {
+		transport.TLSClientConfig.MinVersion = tls.VersionTLS12
+	}
+	transport.TLSClientConfig.InsecureSkipVerify = false
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Timeout: timeout, Transport: transport, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 5 {
@@ -120,7 +138,7 @@ func (d BaselineDAST) Scan(ctx context.Context, rawURL string) (models.ToolOutpu
 				// Never embed the raw Set-Cookie header or cookie value in findings.
 				add("DAST-COOKIE", "Cookie lacks security attributes", "A response cookie lacks Secure or HttpOnly.", models.SeverityMedium)
 			}
-			if cookie.SameSite == http.SameSiteDefaultMode {
+			if cookie.SameSite == 0 || cookie.SameSite == http.SameSiteDefaultMode {
 				add("DAST-SAMESITE", "Cookie has no SameSite attribute", "A response cookie has no explicit SameSite policy.", models.SeverityLow)
 			}
 		}

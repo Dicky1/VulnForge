@@ -37,11 +37,9 @@ func (*BrakemanScanner) ParseOutput(raw []byte) ([]models.Finding, error) {
 	}
 	var out []models.Finding
 	for _, x := range d.Warnings {
-		cwe := ""
-		if x.CWEID != nil {
-			b, _ := json.Marshal(x.CWEID)
-			cwe = "CWE-" + string(b)
-		}
+		// Brakeman emits cwe_id as an array (e.g. [89]); the old json.Marshal
+		// approach produced invalid IDs like "CWE-[89]".
+		cwe := firstCWE(x.CWEID)
 		sev := map[string]string{"High": "CRITICAL", "Medium": "HIGH", "Weak": "MEDIUM"}[x.Confidence]
 		out = append(out, languageFinding("brakeman", "ruby", x.WarningType, x.File, x.Line, x.WarningType, x.Message, sev, "", cwe))
 	}

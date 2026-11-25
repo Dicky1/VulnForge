@@ -24,7 +24,7 @@ func (s *SemgrepScanner) Scan(ctx context.Context, target string) (models.ToolOu
 	}
 	raw, parseErr := semgrepJSON(r.data)
 	if parseErr != nil {
-		detail := strings.TrimSpace(string(r.data))
+		detail := strings.TrimSpace(string(r.combined()))
 		if len(detail) > 2000 {
 			detail = detail[:2000]
 		}
@@ -51,9 +51,10 @@ func semgrepJSON(raw []byte) ([]byte, error) {
 func parseSemgrepOutput(raw []byte, out models.ToolOutput) (models.ToolOutput, error) {
 	var doc struct {
 		Results []struct {
-			CheckID, Path string
-			Start         struct{ Line int }
-			Extra         struct {
+			CheckID string `json:"check_id"`
+			Path    string `json:"path"`
+			Start   struct{ Line int }
+			Extra   struct {
 				Message, Severity string
 				Lines             string `json:"lines"`
 				Metadata          struct {
@@ -66,7 +67,9 @@ func parseSemgrepOutput(raw []byte, out models.ToolOutput) (models.ToolOutput, e
 		return out, err
 	}
 	for _, x := range doc.Results {
-		out.Findings = append(out.Findings, makeFinding("semgrep", x.CheckID, x.Path, x.Start.Line, x.Extra.Message, x.Extra.Severity, x.Extra.Lines))
+		f := makeFinding("semgrep", x.CheckID, x.Path, x.Start.Line, x.Extra.Message, x.Extra.Severity, x.Extra.Lines)
+		f.CWE = firstCWE(x.Extra.Metadata.CWE)
+		out.Findings = append(out.Findings, f)
 	}
 	return out, nil
 }

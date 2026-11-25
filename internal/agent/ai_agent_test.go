@@ -84,3 +84,11 @@ func TestAIPromptOmitsSensitiveEvidence(t *testing.T) {
 		t.Fatal("sensitive evidence leaked into AI prompt")
 	}
 }
+
+func TestAIOutputCannotReclassifyFindingAsZeroDay(t *testing.T) {
+	a := AIValidationAgent{Client: validationStub(`[{"finding_index":0,"is_valid":true,"confidence":1,"zero_day_potential":true}]`), BatchSize: 1, MaxWorkers: 1}
+	got, err := a.ValidateFindingsInBatch(context.Background(), []models.Finding{{ID: "one"}})
+	if err != nil || len(got) != 1 || got[0].IsZeroDay {
+		t.Fatalf("AI changed evidence classification: %v %v", got, err)
+	}
+}

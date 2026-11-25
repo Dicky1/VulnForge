@@ -2,6 +2,7 @@ package reporter
 
 import (
 	"github.com/example/sast-dast-analyzer/internal/models"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -43,14 +44,27 @@ func TestBountyBundleDeduplicates(t *testing.T) {
 }
 
 func TestBountyBundleExcludesHeuristicsAndDependencies(t *testing.T) {
-	reporter := BugBountyReporter{Options: BountyReporterOptions{Target: `C:\project`, POCFormats: []string{"curl"}, MinSeverity: models.SeverityMedium}}
+	// Build OS-native paths: the test previously hard-coded Windows paths
+	// (C:\project\...), which filepath.Rel cannot relate on Linux/macOS.
+	root := filepath.Join(string(filepath.Separator)+"tmp", "project")
+	reporter := BugBountyReporter{Options: BountyReporterOptions{Target: root, POCFormats: []string{"curl"}, MinSeverity: models.SeverityMedium}}
 	findings := []models.Finding{
-		{ID: "z", Title: "crypto issue", Severity: models.SeverityHigh, SourceTool: "zeroday-detector", IsZeroDay: true, FilePath: `C:\project\src\A.sol`},
-		{ID: "dep", Title: "reentrancy", Severity: models.SeverityHigh, SourceTool: "slither", FilePath: `C:\project\lib\Dep.sol`},
-		{ID: "owned", Title: "reentrancy", Severity: models.SeverityHigh, SourceTool: "slither", FilePath: `C:\project\src\Pool.sol`},
+		{ID: "z", Title: "crypto issue", Severity: models.SeverityHigh, SourceTool: "zeroday-detector", IsZeroDay: true, FilePath: filepath.Join(root, "src", "A.sol")},
+		{ID: "dep", Title: "reentrancy", Severity: models.SeverityHigh, SourceTool: "slither", FilePath: filepath.Join(root, "lib", "Dep.sol")},
+		{ID: "owned", Title: "reentrancy", Severity: models.SeverityHigh, SourceTool: "slither", FilePath: filepath.Join(root, "src", "Pool.sol")},
 	}
 	bundle := reporter.BuildBundle(findings, nil)
 	if len(bundle.Reports) != 1 || len(bundle.Excluded) != 2 || bundle.InputCount != 3 || bundle.Reports[0].ID != "owned" || bundle.Reports[0].AffectedEndpoint != "<NOT_ESTABLISHED_FROM_STATIC_ANALYSIS>" {
 		t.Fatalf("unexpected bundle: %#v", bundle)
+	}
+}
+
+func TestPOCQuotesUntrustedEndpoint(t *testing.T) {
+	poc := POCFormatter{Formats: []string{"curl", "python"}}.Format(models.Finding{}, `https://x.test/"$(id)"`)
+	if !strings.Contains(poc.Curl, `'https://x.test/"$(id)"'`) {
+		t.Fatalf("endpoint not single-quoted for the shell: %s", poc.Curl)
+	}
+	if !strings.Contains(poc.Python, `url = "https://x.test/\"$(id)\""`) {
+		t.Fatalf("endpoint not escaped for Python: %s", poc.Python)
 	}
 }

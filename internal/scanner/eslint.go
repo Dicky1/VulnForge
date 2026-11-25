@@ -17,7 +17,7 @@ func (*ESLintScanner) Install(ctx context.Context) error {
 	return installCommand(ctx, "npm", "install", "--global", "eslint", "@microsoft/eslint-plugin-sdl")
 }
 func (s *ESLintScanner) Scan(ctx context.Context, target string, _ *models.ScanConfig) (*models.ToolOutput, error) {
-	r, err := run(ctx, multiScannerTimeout, target, "eslint", "--format=json", "--plugin=@microsoft/security", ".")
+	r, err := run(ctx, multiScannerTimeout, target, "eslint", "--format=json", "--plugin=@microsoft/sdl", ".")
 	if err != nil {
 		return output(s.Name(), r, nil), err
 	}

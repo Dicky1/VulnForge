@@ -1,6 +1,7 @@
 package reporter
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/example/sast-dast-analyzer/internal/models"
 	"strings"
@@ -14,7 +15,7 @@ func BuildDetailedStepsToReproduce(f models.Finding, endpoint string) []models.B
 	steps := []models.BountyStep{{StepNumber: 1, Description: "Obtain written authorization and deploy the affected revision to an isolated staging or local environment.", ExpectedResult: "Testing environment contains no production credentials or real user data."}, {StepNumber: 2, Description: "Review the suspected data flow at " + location + " and identify the corresponding deployed request or contract call.", ExpectedResult: "The exact affected input and code path are documented."}}
 	switch classify(f) {
 	case "sql injection":
-		steps = append(steps, models.BountyStep{StepNumber: 3, Description: "Send a benign quote-character probe to the identified test parameter.", Command: `curl -G "` + endpoint + `" --data-urlencode "value='"`, ExpectedResult: "Record whether validation rejects the input or the response differs from a normal request; do not enumerate data."})
+		steps = append(steps, models.BountyStep{StepNumber: 3, Description: "Send a benign quote-character probe to the identified test parameter.", Command: `curl -G ` + shellQuote(endpoint) + ` --data-urlencode "value='"`, ExpectedResult: "Record whether validation rejects the input or the response differs from a normal request; do not enumerate data."})
 	case "authentication bypass":
 		steps = append(steps, models.BountyStep{StepNumber: 3, Description: "Submit an expired or deliberately invalid test credential.", ExpectedResult: "The service must return 401/403 and create an audit event."})
 	case "authorization bypass":
@@ -42,10 +43,10 @@ func (p POCFormatter) Format(f models.Finding, endpoint string) models.BountyPOC
 		enabled[strings.ToLower(v)] = true
 	}
 	if enabled["curl"] {
-		out.Curl = `curl -i -G "` + endpoint + `" --data-urlencode "probe=SECURITY_TEST_MARKER"`
+		out.Curl = `curl -i -G ` + shellQuote(endpoint) + ` --data-urlencode "probe=SECURITY_TEST_MARKER"`
 	}
 	if enabled["python"] {
-		out.Python = "import requests\nurl = \"" + endpoint + "\"\nr = requests.get(url, params={\"probe\": \"SECURITY_TEST_MARKER\"}, timeout=10)\nprint(r.status_code, r.text[:500])"
+		out.Python = "import requests\nurl = " + pyQuote(endpoint) + "\nr = requests.get(url, params={\"probe\": \"SECURITY_TEST_MARKER\"}, timeout=10)\nprint(r.status_code, r.text[:500])"
 	}
 	if enabled["raw_http"] {
 		out.RawHTTP = "GET /<verified-path>?probe=SECURITY_TEST_MARKER HTTP/1.1\r\nHost: <verified-in-scope-host>\r\nConnection: close\r\n\r\n"
@@ -54,4 +55,19 @@ func (p POCFormatter) Format(f models.Finding, endpoint string) models.BountyPOC
 		out.JavaScript = "fetch('/<verified-path>?probe=SECURITY_TEST_MARKER', {credentials: 'include'}).then(r => r.text()).then(console.log)"
 	}
 	return out
+}
+
+// shellQuote single-quotes s for POSIX shells. The endpoint can originate
+// from scanned (untrusted) content, e.g. a URL in a finding description, so
+// it must never be interpolated into a copy-pasteable command inside double
+// quotes where $(...) or backticks would execute.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
+}
+
+// pyQuote renders s as a Python string literal (JSON string syntax is a
+// valid Python literal for the characters it escapes).
+func pyQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }

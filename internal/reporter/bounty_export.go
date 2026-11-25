@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
-	"os"
+	"io"
 	"path/filepath"
 	"strings"
 
@@ -57,15 +57,7 @@ func formatBountyBundle(b models.BountyBundle) string {
 var bountyHTML = template.Must(template.New("bounty").Parse(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Bug Bounty Submission Bundle</title><style>body{font:14px system-ui;background:#f2f5f9;color:#172033;margin:0}main{max-width:1000px;margin:auto;padding:28px}.card{background:white;padding:22px;margin:16px 0;border-radius:12px;box-shadow:0 4px 18px #0001}.blocked{border-left:6px solid #b4233d}.ready{border-left:6px solid #17815f}.excluded{border-left:6px solid #d49a18}.empty{border-left:6px solid #3977b8}.pill{padding:4px 9px;border-radius:99px;background:#e5ebf3;font-weight:700}pre{white-space:pre-wrap;background:#101828;color:#d7e3f4;padding:15px;border-radius:8px;overflow:auto}.notice{background:#fff0d4;padding:14px;border-radius:8px}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px;border-bottom:1px solid #e4e8ee;vertical-align:top}li{margin:8px 0}</style></head><body><main><h1>Bug Bounty Submission Bundle</h1><p>{{.Target}} · {{.InputCount}} reviewed · {{.ReadyCount}} ready · {{.BlockedCount}} blocked · {{len .Excluded}} excluded</p><div class="notice">Generated reports require human verification. Never submit static scanner output as a confirmed vulnerability without reproducible evidence and confirmed program scope.</div>{{if not .Reports}}<section class="card empty"><h2>No eligible bounty candidates</h2><p>No finding passed the evidence, classification, ownership, and severity gates. The scan did not fail; review the reasons below and collect runtime evidence before submission.</p></section>{{end}}{{if .Excluded}}<section class="card excluded"><h2>Excluded findings</h2><table><tr><th>Finding</th><th>Source</th><th>Reason</th></tr>{{range .Excluded}}<tr><td><b>{{.Title}}</b><br><small>{{.FilePath}}</small></td><td>{{.SourceTool}}</td><td>{{.Reason}}</td></tr>{{end}}</table></section>{{end}}{{range .Reports}}<article class="card {{if .ReadyToSubmit}}ready{{else}}blocked{{end}}"><span class="pill">{{.Platform}}</span> <span class="pill">{{.Severity}}</span><h2>{{.Title}}</h2><p><b>Status:</b> {{if .ReadyToSubmit}}Ready after final human review{{else}}Draft — blocked{{end}}</p>{{if .BlockingReasons}}<ul>{{range .BlockingReasons}}<li>{{.}}</li>{{end}}</ul>{{end}}<p><b>Endpoint:</b> {{.AffectedEndpoint}}</p><h3>Description</h3><p>{{.Description}}</p><h3>Steps to reproduce</h3><ol>{{range .StepsToReproduce}}<li>{{.Description}}<br><small>Expected: {{.ExpectedResult}}</small>{{if .Command}}<pre>{{.Command}}</pre>{{end}}</li>{{end}}</ol><h3>Safe POC</h3><pre>{{.ProofOfConcept.Curl}}</pre><h3>Impact</h3><p>{{.Impact.SecurityImpact}}</p><p>{{.Impact.BusinessImpact}}</p><h3>Remediation</h3><ul>{{range .Remediation}}<li>{{.}}</li>{{end}}</ul></article>{{end}}</main></body></html>`))
 
 func exportBountyHTML(b models.BountyBundle, path string) error {
-	if err := ensureDir(path); err != nil {
-		return err
-	}
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return bountyHTML.Execute(f, b)
+	return atomicReport(path, func(f io.Writer) error { return bountyHTML.Execute(f, b) })
 }
 func exportBountyPDF(b models.BountyBundle, path string) error {
 	pdf := newStyledPDF("Bug Bounty Submission Bundle")
@@ -142,5 +134,5 @@ func exportBountyPDF(b models.BountyBundle, path string) error {
 	if err := ensureDir(path); err != nil {
 		return err
 	}
-	return pdf.OutputFileAndClose(path)
+	return atomicReportPath(path, pdf.OutputFileAndClose)
 }

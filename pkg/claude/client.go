@@ -62,7 +62,11 @@ func (c *Client) ValidateFindings(ctx context.Context, prompt string) (string, e
 			if v == "" {
 				return "", errors.New("Claude returned no text")
 			}
-			c.tokens.Add(int64((len(prompt) + len(v) + 3) / 4))
+			used := msg.Usage.InputTokens + msg.Usage.OutputTokens
+			if used == 0 {
+				used = int64((len(prompt) + len(v) + 3) / 4)
+			}
+			c.tokens.Add(used)
 			c.mu.Lock()
 			c.cache[prompt] = v
 			c.mu.Unlock()

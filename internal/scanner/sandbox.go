@@ -178,10 +178,13 @@ func runScannerSandboxed(ctx context.Context, timeout time.Duration, dir, output
 }
 
 func runDocker(ctx context.Context, timeout time.Duration, containerName string, dockerArgs []string) (commandResult, error) {
+	if timeout <= 0 {
+		timeout = defaultScannerTimeout
+	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
-	b, err := cmd.CombinedOutput()
+	res, err := execSplit(ctx, cmd)
 	if ctx.Err() != nil {
 		// --rm handles a normal exit, but a client process killed on timeout
 		// can otherwise orphan a running container.
@@ -189,5 +192,5 @@ func runDocker(ctx context.Context, timeout time.Duration, containerName string,
 		defer cleanupCancel()
 		_ = exec.CommandContext(cleanupCtx, "docker", "kill", containerName).Run()
 	}
-	return interpretExecResult(ctx, b, err)
+	return res, err
 }

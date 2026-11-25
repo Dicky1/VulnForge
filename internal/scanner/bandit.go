@@ -25,6 +25,9 @@ func (s *BanditScanner) Scan(ctx context.Context, target string) (models.ToolOut
 			Severity  string `json:"issue_severity"`
 			Text      string `json:"issue_text"`
 			Code      string `json:"code"`
+			CWE       struct {
+				ID any `json:"id"`
+			} `json:"issue_cwe"`
 		} `json:"results"`
 	}
 	if err = json.Unmarshal(r.data, &d); err != nil {
@@ -33,6 +36,7 @@ func (s *BanditScanner) Scan(ctx context.Context, target string) (models.ToolOut
 	for _, x := range d.Results {
 		f := makeFinding("bandit", x.TestID, x.Filename, x.Line, x.Text, x.Severity, x.Code)
 		f.Title = x.IssueType
+		f.CWE = firstCWE(x.CWE.ID)
 		out.Findings = append(out.Findings, f)
 	}
 	return out, nil

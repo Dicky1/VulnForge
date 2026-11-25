@@ -54,25 +54,30 @@ func (d BaselineDAST) Scan(ctx context.Context, rawURL string) (models.ToolOutpu
 		timeout = 15 * time.Second
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxResponseHeaderBytes = 1 << 20
 	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Timeout: timeout, Transport: transport, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 5 {
 			return fmt.Errorf("DAST redirect limit exceeded")
 		}
-		if !sameDASTScope(u, req.URL) {
+		if !sameDASTScope(u, req.URL) || (via[len(via)-1].URL.Scheme == "https" && req.URL.Scheme != "https") {
 			return fmt.Errorf("DAST redirect left the authorized origin")
 		}
 		return nil
 	}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
-		return out, err
+		return out, fmt.Errorf("could not construct DAST request")
 	}
 	req.Header.Set("User-Agent", "VulnForge/1.0 passive-security-check")
 	resp, err := client.Do(req)
 	if err != nil {
-		return out, err
+		if ctx.Err() != nil {
+			return out, ctx.Err()
+		}
+		// URL errors can contain sensitive query values or redirect locations.
+		return out, fmt.Errorf("DAST HTTP request failed or redirect was rejected")
 	}
 	defer resp.Body.Close()
 	out.ExitCode = 0
@@ -113,10 +118,10 @@ func (d BaselineDAST) Scan(ctx context.Context, rawURL string) (models.ToolOutpu
 		for _, cookie := range resp.Cookies() {
 			if !cookie.Secure || !cookie.HttpOnly {
 				// Never embed the raw Set-Cookie header or cookie value in findings.
-				add("DAST-COOKIE", "Cookie lacks security attributes", fmt.Sprintf("Cookie %q lacks Secure or HttpOnly.", cookie.Name), models.SeverityMedium)
+				add("DAST-COOKIE", "Cookie lacks security attributes", "A response cookie lacks Secure or HttpOnly.", models.SeverityMedium)
 			}
 			if cookie.SameSite == http.SameSiteDefaultMode {
-				add("DAST-SAMESITE", "Cookie has no SameSite attribute", fmt.Sprintf("Cookie %q has no explicit SameSite policy.", cookie.Name), models.SeverityLow)
+				add("DAST-SAMESITE", "Cookie has no SameSite attribute", "A response cookie has no explicit SameSite policy.", models.SeverityLow)
 			}
 		}
 	}

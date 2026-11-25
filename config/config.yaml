@@ -141,7 +141,7 @@ sandbox:
   # Opt-in: when true, scanners with a configured image below run inside a
   # locked-down, read-only, network-isolated Docker container instead of
   # directly on the host against the (untrusted) scanned repository. Requires
-  # Docker; scanners without a configured image still run locally as before.
+  # Docker; scanners without a configured image fail closed when enabled.
   # See docker/sandbox/README.md to build/extend the images.
   enabled: false
   network_default: "none"

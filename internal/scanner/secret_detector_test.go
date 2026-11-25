@@ -65,3 +65,17 @@ func TestSecretDetectorExclusionsMatchComponents(t *testing.T) {
 		t.Fatal("exclusions must match complete path components")
 	}
 }
+
+func TestLongLineDoesNotAbortScan(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.js"), []byte(strings.Repeat("x", (1<<20)+64)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "b.go"), []byte(`package x; const key="AKIA1234567890ABCDEF" // test configuration`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	findings, err := NewSecretDetector().Scan(context.Background(), root)
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("expected later finding, got %d %v", len(findings), err)
+	}
+}

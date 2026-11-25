@@ -51,3 +51,19 @@ func priority(f models.Finding) float64 {
 	}
 	return base + f.AIConfidence*20
 }
+
+// SelectForAI partitions the report without dropping findings. Budget is an
+// estimate, not a promise about upstream billed token counts.
+func (t Tokenizer) SelectForAI(in []models.Finding) (selected, remaining []models.Finding) {
+	used := 0
+	for _, f := range in {
+		cost := EstimateTokens(f)
+		if t.Budget > 0 && used+cost > t.Budget {
+			remaining = append(remaining, f)
+			continue
+		}
+		selected = append(selected, f)
+		used += cost
+	}
+	return
+}

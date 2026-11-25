@@ -92,14 +92,21 @@ func (a *SASTAgent) RunMultiLanguageSASTScan(ctx context.Context, target string,
 			}
 			cfg := &models.ScanConfig{TargetPath: target, Language: t.lang, MaxWorkers: workers}
 			o, err := t.scanner.Scan(ctx, target, cfg)
-			if err == nil {
-				for i := range o.Findings {
-					if o.Findings[i].Language == "" {
-						o.Findings[i].Language = t.lang
-					}
+			if err == nil && o == nil {
+				err = fmt.Errorf("scanner returned no output")
+			}
+			if err != nil {
+				// o may be nil on error (e.g. slither temp-dir failure); never
+				// dereference it here.
+				ch <- result{err: err, name: t.name}
+				return
+			}
+			for i := range o.Findings {
+				if o.Findings[i].Language == "" {
+					o.Findings[i].Language = t.lang
 				}
 			}
-			ch <- result{o.Findings, err, t.name}
+			ch <- result{o.Findings, nil, t.name}
 		}(t)
 	}
 	go func() { wg.Wait(); close(ch) }()

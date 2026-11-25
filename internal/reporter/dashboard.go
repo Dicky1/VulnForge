@@ -3,7 +3,7 @@ package reporter
 import (
 	"fmt"
 	"html/template"
-	"os"
+	"io"
 	"sort"
 
 	"github.com/example/sast-dast-analyzer/internal/models"
@@ -18,7 +18,7 @@ type dashboardView struct {
 	Report     models.Report
 	Findings   []dashboardFinding
 	Top        []dashboardFinding
-	Pie        string
+	Pie        template.CSS // built only from internally formatted numbers
 	MaxRevenue string
 }
 
@@ -54,14 +54,6 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
 </main><script>document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab,.panel').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.getElementById(b.dataset.tab).classList.add('active')})</script></body></html>`))
 
 func renderDashboard(r models.Report, path string) error {
-	if err := ensureDir(path); err != nil {
-		return err
-	}
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
 	if r.BusinessReport == nil {
 		r.BusinessReport = &models.BusinessReport{SeverityCounts: map[string]int{}, RiskMatrix: map[string]map[string]int{}}
 	}
@@ -89,7 +81,7 @@ func renderDashboard(r models.Report, path string) error {
 	c := float64(counts["critical"]) / float64(total) * 100
 	h := c + float64(counts["high"])/float64(total)*100
 	m := h + float64(counts["medium"])/float64(total)*100
-	view.Pie = "var(--critical) 0 " + num(c) + "%,var(--high) " + num(c) + "% " + num(h) + "%,var(--medium) " + num(h) + "% " + num(m) + "%,var(--low) " + num(m) + "% 100%"
-	return dashboardTemplate.Execute(f, view)
+	view.Pie = template.CSS("var(--critical) 0 " + num(c) + "%,var(--high) " + num(c) + "% " + num(h) + "%,var(--medium) " + num(h) + "% " + num(m) + "%,var(--low) " + num(m) + "% 100%")
+	return atomicReport(path, func(f io.Writer) error { return dashboardTemplate.Execute(f, view) })
 }
 func num(v float64) string { return template.HTMLEscapeString(fmt.Sprintf("%.2f", v)) }

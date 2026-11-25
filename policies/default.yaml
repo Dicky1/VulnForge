@@ -16,7 +16,7 @@ policy:
 filtering:
   exclude_paths: [vendor/, node_modules/, .git/, testdata/]
   exclude_cwe: []
-  minimum_confidence: 0.75
-  minimum_severity: medium
+  minimum_confidence: 0
+  minimum_severity: low
 compliance:
   frameworks: [owasp-top-10, cwe-top-25]

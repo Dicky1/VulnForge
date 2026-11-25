@@ -1,6 +1,9 @@
 package scanner
 
-import "testing"
+import (
+	"github.com/example/sast-dast-analyzer/internal/models"
+	"testing"
+)
 
 func TestESLintParseOutput(t *testing.T) {
 	raw := []byte(`[{"filePath":"app.js","messages":[{"ruleId":"security/detect-eval-with-expression","severity":2,"message":"eval injection","line":7}]}]`)
@@ -47,5 +50,23 @@ func TestSemgrepJSONIgnoresConsolePrefix(t *testing.T) {
 	}
 	if string(got) != `{"results":[],"errors":[]}` {
 		t.Fatalf("unexpected JSON: %s", got)
+	}
+}
+
+func TestSemgrepRetainsRuleIDAndCWE(t *testing.T) {
+	raw := []byte(`{"results":[{"check_id":"rule.one","path":"a.go","start":{"line":3},"extra":{"message":"issue","severity":"WARNING","metadata":{"cwe":["CWE-89: SQL Injection"]}}},{"check_id":"rule.two","path":"a.go","start":{"line":3},"extra":{"message":"issue","severity":"WARNING"}}]}`)
+	out, err := parseSemgrepOutput(raw, models.ToolOutput{})
+	if err != nil || len(out.Findings) != 2 {
+		t.Fatalf("unexpected: %v %v", out, err)
+	}
+	if out.Findings[0].Title != "rule.one" || out.Findings[0].CWE != "CWE-89" || out.Findings[0].ID == out.Findings[1].ID {
+		t.Fatalf("lost rule metadata: %v", out.Findings)
+	}
+}
+func TestFirstCWEVariants(t *testing.T) {
+	for _, value := range []any{"CWE-89: SQL Injection", float64(89), []any{"CWE-89"}, "89"} {
+		if got := firstCWE(value); got != "CWE-89" {
+			t.Errorf("got %q", got)
+		}
 	}
 }

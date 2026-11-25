@@ -48,7 +48,7 @@ func (s *SlitherScanner) Scan(ctx context.Context, target string, _ *models.Scan
 	}
 	raw, readErr := os.ReadFile(jsonPath)
 	if readErr != nil {
-		detail := strings.TrimSpace(string(r.data))
+		detail := strings.TrimSpace(string(r.combined()))
 		if detail != "" {
 			return output(s.Name(), r, nil), fmt.Errorf("Slither did not produce JSON (exit %d): %s", r.exitCode, detail)
 		}

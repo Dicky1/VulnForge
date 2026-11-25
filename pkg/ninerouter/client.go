@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -48,16 +50,21 @@ func NewClient(baseURL, key, model string, timeout time.Duration, maxRetries int
 	if baseURL == "" {
 		baseURL = "http://localhost:20128"
 	}
+	if key != "" && !SecureEndpoint(baseURL) {
+		return nil, errors.New("refusing insecure credential transport")
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return nil, errors.New("invalid 9Router endpoint")
+	}
 	if model == "" {
 		return nil, errors.New("9Router model is required; discover one through GET /v1/models")
 	}
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	if maxRetries < 0 {
-		maxRetries = 0
-	}
-	return &Client{baseURL: baseURL, key: key, model: model, http: &http.Client{Timeout: timeout}, maxRetries: maxRetries, cache: map[string]string{}}, nil
+	maxRetries = max(0, min(maxRetries, 5))
+	return &Client{baseURL: baseURL, key: key, model: model, http: &http.Client{Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, maxRetries: maxRetries, cache: map[string]string{}}, nil
 }
 func (c *Client) ValidateFindings(ctx context.Context, prompt string) (string, error) {
 	c.mu.RLock()
@@ -99,11 +106,21 @@ func (c *Client) ValidateFindings(ctx context.Context, prompt string) (string, e
 				}
 				c.tokens.Add(int64(used))
 				c.mu.Lock()
-				c.cache[prompt] = text
+				if len(c.cache) < 128 {
+					c.cache[prompt] = text
+				}
 				c.mu.Unlock()
 				return text, nil
 			}
-			last = fmt.Errorf("9Router HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+			detail := strings.TrimSpace(string(body))
+			if len(detail) > 500 {
+				detail = detail[:500]
+			}
+			last = fmt.Errorf("9Router HTTP %d: %s", resp.StatusCode, detail)
+			if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode != http.StatusRequestTimeout {
+				// Auth/validation errors will not succeed on retry.
+				return "", last
+			}
 		} else {
 			last = err
 		}
@@ -121,7 +138,10 @@ func (c *Client) ValidateFindings(ctx context.Context, prompt string) (string, e
 }
 func (c *Client) TokenUsed() int { return int(c.tokens.Load()) }
 func (c *Client) Health(ctx context.Context) error {
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/health", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/health", nil)
+	if err != nil {
+		return err
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
@@ -131,4 +151,25 @@ func (c *Client) Health(ctx context.Context) error {
 		return fmt.Errorf("9Router health HTTP %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// SecureEndpoint reports whether credentials may be sent to baseURL: HTTPS
+// anywhere, or plain HTTP only to a loopback host (the default local 9Router).
+func SecureEndpoint(baseURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || u.Hostname() == "" || u.User != nil {
+		return false
+	}
+	if strings.EqualFold(u.Scheme, "https") {
+		return true
+	}
+	if !strings.EqualFold(u.Scheme, "http") {
+		return false
+	}
+	host := u.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

@@ -74,15 +74,17 @@ func (a *AIValidationAgent) ValidateFindingsInBatch(ctx context.Context, in []mo
 	if len(in) == 0 {
 		return in, nil
 	}
-	if a.BatchSize <= 0 {
-		a.BatchSize = 10
+	if a.Client == nil {
+		return in, fmt.Errorf("AI client unavailable")
 	}
-	if a.BatchSize > 10 {
-		a.BatchSize = 10
+	batchSize, workers := a.BatchSize, a.MaxWorkers
+	if batchSize <= 0 || batchSize > 10 {
+		batchSize = 10
 	}
-	if a.MaxWorkers <= 0 {
-		a.MaxWorkers = 4
+	if workers <= 0 {
+		workers = 4
 	}
+	workers = min(workers, 32, (len(in)+batchSize-1)/batchSize)
 	type job struct {
 		start int
 		items []models.Finding
@@ -96,7 +98,7 @@ func (a *AIValidationAgent) ValidateFindingsInBatch(ctx context.Context, in []mo
 	jobs := make(chan job)
 	results := make(chan result)
 	var wg sync.WaitGroup
-	for i := 0; i < a.MaxWorkers; i++ {
+	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -107,8 +109,8 @@ func (a *AIValidationAgent) ValidateFindingsInBatch(ctx context.Context, in []mo
 		}()
 	}
 	go func() {
-		for i := 0; i < len(in); i += a.BatchSize {
-			end := i + a.BatchSize
+		for i := 0; i < len(in); i += batchSize {
+			end := i + batchSize
 			if end > len(in) {
 				end = len(in)
 			}
@@ -165,7 +167,7 @@ func (a *AIValidationAgent) validateBatch(ctx context.Context, in []models.Findi
 		f := &out[v.FindingIndex]
 		f.AIConfidence = confidence
 		f.AIAnalysis = v.Reason + " Exploitation feasibility: " + v.ExploitationFeasibility
-		f.IsZeroDay = bool(v.ZeroDayPotential)
+		// Model output is not evidence of novelty. Preserve scanner classification.
 	}
 	if len(seen) != len(in) {
 		return nil, fmt.Errorf("AI validation incomplete: received %d of %d findings", len(seen), len(in))
@@ -208,17 +210,19 @@ func buildLanguageAwarePrompt(in []models.Finding) string {
 	}
 	b.WriteString("Return ONLY a JSON array with keys finding_index, is_valid, confidence, reason, exploitation_feasibility, zero_day_potential. is_valid and zero_day_potential MUST be JSON boolean literals true or false, never numbers or explanatory text. confidence MUST be a number from 0 to 1. Preserve the original finding indexes and do not use markdown. Findings:\n")
 	type promptFinding struct {
-		ID string `json:"id"`
-		Title string `json:"title"`
-		Language string `json:"language"`
+		ID       string          `json:"id"`
+		Title    string          `json:"title"`
+		Language string          `json:"language"`
 		Severity models.Severity `json:"severity"`
-		CWE string `json:"cwe"`
+		CWE      string          `json:"cwe"`
 	}
 	safe := make([]promptFinding, 0, len(in))
 	for _, f := range in {
 		safe = append(safe, promptFinding{f.ID, f.Title, f.Language, f.Severity, f.CWE})
 	}
 	payload, _ := json.Marshal(safe)
+	b.WriteString("<untrusted_findings>\n")
 	b.Write(payload)
+	b.WriteString("\n</untrusted_findings>")
 	return b.String()
 }

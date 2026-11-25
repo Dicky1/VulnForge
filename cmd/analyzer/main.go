@@ -33,8 +33,8 @@ import (
 )
 
 type options struct {
-	target, output, formats, policy, dastURL, containerImage, sbomFormat, compareID, dbPath, bountyProgram string
-	track, githubActions, gitlabCI, jenkins, preCommit                                                     bool
+	target, output, formats, policy, dastURL, containerImage, sbomFormat, compareID, dbPath, bountyProgram, configPath string
+	track, githubActions, gitlabCI, jenkins, preCommit                                                                 bool
 }
 type validationClient interface {
 	ValidateFindings(context.Context, string) (string, error)
@@ -50,6 +50,9 @@ func main() {
 		}
 	}()
 	if err := run(context.Background(), logger, os.Args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return // -h/--help already printed usage; not an error
+		}
 		logger.Printf("error: %v", err)
 		os.Exit(1)
 	}
@@ -63,6 +66,7 @@ func parseOptions(args []string) (options, error) {
 	fs.StringVar(&o.output, "output", "", "base report output path")
 	fs.StringVar(&o.formats, "export-format", "", "comma-separated: json,html,dashboard,pdf,sarif,xml,csv,bounty-report")
 	fs.StringVar(&o.policy, "policy", "", "policy YAML path")
+	fs.StringVar(&o.configPath, "config", "", "config YAML path (default $ANALYZER_CONFIG or config/config.yaml)")
 	fs.StringVar(&o.dastURL, "dast-url", "", "authorized runtime URL for passive DAST")
 	fs.BoolVar(&o.track, "track-history", false, "save report in SQLite history")
 	fs.StringVar(&o.dbPath, "database", "", "SQLite database path")
@@ -101,7 +105,17 @@ func run(ctx context.Context, logger *log.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := config.Load(filepath.Join("config", "config.yaml"))
+	if o.configPath == "" {
+		o.configPath = os.Getenv("ANALYZER_CONFIG")
+	}
+	if o.configPath == "" {
+		o.configPath = filepath.Join("config", "config.yaml")
+	} else if _, statErr := os.Stat(o.configPath); statErr != nil {
+		// An explicitly requested config must exist; only the implicit
+		// default may silently fall back to built-in defaults.
+		return fmt.Errorf("load config: %w", statErr)
+	}
+	cfg, err := config.Load(o.configPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
@@ -132,8 +146,15 @@ func run(ctx context.Context, logger *log.Logger, args []string) error {
 	if o.formats == "" {
 		o.formats = "json"
 	}
-	if o.policy == "" {
-		o.policy = cfg.Analyzer.Policy
+	if o.policy == "" && cfg.Analyzer.Policy != "" {
+		// The configured default policy path is relative to the working
+		// directory; running the binary from elsewhere must not abort the
+		// whole scan just because that default file is absent.
+		if _, statErr := os.Stat(cfg.Analyzer.Policy); statErr == nil {
+			o.policy = cfg.Analyzer.Policy
+		} else {
+			logger.Printf("default policy %s not found; continuing without a policy", cfg.Analyzer.Policy)
+		}
 	}
 	if o.dbPath == "" {
 		o.dbPath = cfg.Storage.DatabasePath
@@ -161,7 +182,7 @@ func run(ctx context.Context, logger *log.Logger, args []string) error {
 			return fmt.Errorf("load policy: %w", err)
 		}
 	}
-	if err = generateIntegrations(target, o, cfg); err != nil {
+	if err = generateIntegrations(logger, target, o, cfg); err != nil {
 		return err
 	}
 	ld := detector.NewLanguageDetector(target)
@@ -201,7 +222,7 @@ func run(ctx context.Context, logger *log.Logger, args []string) error {
 		dast := scanner.BaselineDAST{Timeout: time.Duration(cfg.DAST.TimeoutSeconds) * time.Second, MaxBodyBytes: cfg.DAST.MaxBodyBytes}
 		result, e := dast.Scan(ctx, o.dastURL)
 		if e != nil {
-			logger.Printf("DAST degraded: %v", e)
+			return fmt.Errorf("DAST failed: %w", e)
 		} else {
 			findings = append(findings, result.Findings...)
 		}
@@ -217,14 +238,23 @@ func run(ctx context.Context, logger *log.Logger, args []string) error {
 		}
 	}
 	opt := optimizer.Tokenizer{Budget: cfg.Optimizer.MaxTokenBudget, SkipPatterns: cfg.Optimizer.SkipPatterns}
+	// Dedup + known-false-positive skip only. The token budget limits what is
+	// sent to the LLM below; it must never truncate the report itself (the
+	// old FilterFindings call silently dropped every finding past ~5000
+	// estimated tokens, plus all LOW findings).
 	findings = opt.FilterFindings(findings)
 	if cfg.Scoring.CVSSEnabled {
 		calc := &scorer.CVSSCalculator{}
 		for i := range findings {
-			m := calc.MetricsForFinding(findings[i])
-			findings[i].CVSSBase = calc.CalculateScore(m)
-			findings[i].CVSSVector = scorer.Vector(m)
-			if cfg.Scoring.SeverityMapping {
+			// Keep authoritative scores reported by the scanner itself
+			// (Trivy/Grype/Dependency-Check advisories carry a real CVSS
+			// vector); only heuristically score findings that have none.
+			if findings[i].CVSSVector == "" {
+				m := calc.MetricsForFinding(findings[i])
+				findings[i].CVSSBase = calc.CalculateScore(m)
+				findings[i].CVSSVector = scorer.Vector(m)
+			}
+			if cfg.Scoring.SeverityMapping && findings[i].Severity == "" {
 				findings[i].Severity = calc.SeverityFromScore(findings[i].CVSSBase)
 			}
 		}
@@ -238,14 +268,17 @@ func run(ctx context.Context, logger *log.Logger, args []string) error {
 		} else {
 			aiClient = client
 			ai := &agent.AIValidationAgent{Client: client, BatchSize: cfg.Validator.BatchSize, MaxWorkers: cfg.Validator.MaxWorkers, ConfidenceThreshold: cfg.Validator.ConfidenceThreshold}
-			validated, e := ai.ValidateFindingsInBatch(ctx, findings)
+			toValidate, overBudget := opt.SelectForAI(findings)
+			if len(overBudget) > 0 {
+				logger.Printf("AI token budget (%d) covers %d of %d findings; %d kept unvalidated", cfg.Optimizer.MaxTokenBudget, len(toValidate), len(findings), len(overBudget))
+			}
+			validated, e := ai.ValidateFindingsInBatch(ctx, toValidate)
 			if e != nil {
 				logger.Printf("AI validation partially failed: %v", e)
 			}
 			if len(validated) > 0 || e == nil {
-				findings = validated
+				findings = append(validated, overBudget...)
 			}
-			findings = opt.FilterFindings(findings)
 			tokenUsed = client.TokenUsed()
 		}
 	}
@@ -314,9 +347,14 @@ func run(ctx context.Context, logger *log.Logger, args []string) error {
 			b = append([]byte(xml.Header), b...)
 			name = "sbom.cyclonedx.xml"
 		}
+		name = filepath.Join(filepath.Dir(o.output), name)
+		if e = os.MkdirAll(filepath.Dir(name), 0700); e != nil {
+			return e
+		}
 		if e = os.WriteFile(name, b, 0600); e != nil {
 			return e
 		}
+		logger.Printf("wrote %s", name)
 	}
 	var businessReport *models.BusinessReport
 	if cfg.Reporter.EnableBusinessImpact {
@@ -398,6 +436,9 @@ func newAIClient(ctx context.Context, cfg config.Config) (validationClient, erro
 		if model == "" {
 			model = cfg.NineRouter.Model
 		}
+		if key != "" && !ninerouter.SecureEndpoint(baseURL) {
+			return nil, fmt.Errorf("refusing to send NINEROUTER_KEY over plaintext HTTP to non-loopback host %q; use https", baseURL)
+		}
 		client, err := ninerouter.NewClient(baseURL, key, model, time.Duration(cfg.NineRouter.TimeoutSeconds)*time.Second, cfg.NineRouter.MaxRetries)
 		if err != nil {
 			return nil, err
@@ -427,7 +468,7 @@ func effectiveAIProvider(cfg config.Config) string {
 	return provider
 }
 
-func generateIntegrations(target string, o options, cfg config.Config) error {
+func generateIntegrations(logger *log.Logger, target string, o options, cfg config.Config) error {
 	files := map[string]string{}
 	if o.githubActions || cfg.Integrations.GitHubActions {
 		files[filepath.Join(target, ".github", "workflows", "security-scan.yml")] = integrations.GenerateGithubActionsYAML()
@@ -445,12 +486,16 @@ func generateIntegrations(target string, o options, cfg config.Config) error {
 		files[filepath.Join(target, ".git", "hooks", "pre-commit")] = integrations.GeneratePreCommitHook()
 	}
 	for path, body := range files {
-		if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
+		executable := filepath.Base(filepath.Dir(path)) == "hooks"
+		if err := integrations.WriteGeneratedFileWithin(target, path, body, executable); err != nil {
+			if errors.Is(err, integrations.ErrExists) {
+				// Never clobber the project's own pipeline or hook.
+				logger.Printf("integration skipped: %v", err)
+				continue
+			}
 			return err
 		}
-		if err := os.WriteFile(path, []byte(body), 0750); err != nil {
-			return err
-		}
+		logger.Printf("generated %s", path)
 	}
 	return nil
 }

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
-	"os"
+	"io"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -124,7 +124,7 @@ func (*ReportExporter) ExportPDF(r models.Report, path string) error {
 	if e := ensureDir(path); e != nil {
 		return e
 	}
-	return pdf.OutputFileAndClose(path)
+	return atomicReportPath(path, pdf.OutputFileAndClose)
 }
 
 func (*ReportExporter) ExportSARIF(r models.Report, path string) error {
@@ -191,55 +191,42 @@ func (*ReportExporter) ExportXML(r models.Report, path string) error {
 	return write(path, append([]byte(xml.Header), b...))
 }
 func (*ReportExporter) ExportCSV(r models.Report, path string) error {
-	if e := ensureDir(path); e != nil {
-		return e
-	}
-	f, e := os.Create(path)
-	if e != nil {
-		return e
-	}
-	defer f.Close()
-	w := csv.NewWriter(f)
-	defer w.Flush()
-	if e = w.Write([]string{"ID", "Title", "Severity", "Language", "CWE", "CVSS", "File", "Line", "Remediation"}); e != nil {
-		return e
-	}
-	for _, v := range r.Findings {
-		if e = w.Write([]string{
-			sanitizeCSVField(v.ID),
-			sanitizeCSVField(v.Title),
-			string(v.Severity),
-			sanitizeCSVField(v.Language),
-			sanitizeCSVField(v.CWE),
-			strconv.FormatFloat(v.CVSSBase, 'f', 1, 64),
-			sanitizeCSVField(v.FilePath),
-			strconv.Itoa(v.LineNumber),
-			sanitizeCSVField(v.Remediation),
-		}); e != nil {
+	return atomicReport(path, func(f io.Writer) error {
+		var e error
+		w := csv.NewWriter(f)
+		if e = w.Write([]string{"ID", "Title", "Severity", "Language", "CWE", "CVSS", "File", "Line", "Remediation"}); e != nil {
 			return e
 		}
-	}
-	return w.Error()
+		for _, v := range r.Findings {
+			if e = w.Write([]string{
+				sanitizeCSVField(v.ID),
+				sanitizeCSVField(v.Title),
+				sanitizeCSVField(string(v.Severity)),
+				sanitizeCSVField(v.Language),
+				sanitizeCSVField(v.CWE),
+				strconv.FormatFloat(v.CVSSBase, 'f', 1, 64),
+				sanitizeCSVField(v.FilePath),
+				strconv.Itoa(v.LineNumber),
+				sanitizeCSVField(v.Remediation),
+			}); e != nil {
+				return e
+			}
+		}
+		w.Flush()
+		if e = w.Error(); e != nil {
+			return e
+		}
+		return nil
+	})
 }
 func sanitizeCSVField(s string) string {
-	if len(s) > 0 && (s[0] == '=' || s[0] == '+' || s[0] == '-' || s[0] == '@' || s[0] == '\t' || s[0] == '\r') {
+	trim := strings.TrimLeft(s, " \t\r\n")
+	if len(s) > 0 && (s[0] == '=' || s[0] == '+' || s[0] == '-' || s[0] == '@' || s[0] == '\t' || s[0] == '\r' || s[0] == '\n' || (len(trim) > 0 && strings.ContainsRune("=+-@", rune(trim[0])))) {
 		return "'" + s
 	}
 	return s
 }
-func write(path string, b []byte) error {
-	if e := ensureDir(path); e != nil {
-		return e
-	}
-	return os.WriteFile(path, b, 0600)
-}
-func ensureDir(path string) error {
-	dir := filepath.Dir(path)
-	if dir == "." || dir == "" {
-		return nil
-	}
-	return os.MkdirAll(dir, 0750)
-}
+
 func sarifLevel(s models.Severity) string {
 	switch s {
 	case models.SeverityCritical, models.SeverityHigh:

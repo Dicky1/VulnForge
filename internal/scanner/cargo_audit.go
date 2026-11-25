@@ -47,7 +47,7 @@ func (*CargoAuditScanner) ParseOutput(raw []byte) ([]models.Finding, error) {
 			id = x.Advisory.CVE
 		}
 		desc := fmt.Sprintf("%s %s: %s (%s)", x.Package.Name, x.Package.Version, x.Advisory.Description, x.Advisory.URL)
-		out = append(out, languageFinding("cargo-audit", "rust", id, "Cargo.lock", 0, x.Advisory.Title, desc, x.Advisory.Severity, "", "CWE-1104"))
+		out = append(out, languageFinding("cargo-audit", "rust", id+":"+x.Package.Name+":"+x.Package.Version, "Cargo.lock", 0, x.Advisory.Title, desc, x.Advisory.Severity, "", "CWE-1104"))
 	}
 	return out, nil
 }

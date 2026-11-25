@@ -3,7 +3,9 @@ package scanner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -14,6 +16,9 @@ const multiScannerTimeout = 10 * time.Minute
 
 func installed(name string) bool { _, err := exec.LookPath(name); return err == nil }
 func installCommand(ctx context.Context, name string, args ...string) error {
+	if sandbox.Enabled {
+		return errors.New("host auto-install disabled while scanner isolation is required")
+	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
@@ -41,4 +46,47 @@ func containsSecurity(v string) bool {
 		}
 	}
 	return false
+}
+
+var cweRef = regexp.MustCompile(`(?i)\bCWE-?(\d+)\b`)
+
+// firstCWE normalizes the many shapes scanners use for CWE metadata
+// ("CWE-89: ...", ["CWE-79: ..."], 89, [89], "89") into "CWE-<n>".
+func firstCWE(v any) string {
+	switch x := v.(type) {
+	case nil:
+		return ""
+	case string:
+		if m := cweRef.FindStringSubmatch(x); m != nil {
+			return "CWE-" + m[1]
+		}
+		x = strings.TrimSpace(x)
+		if x != "" && strings.Trim(x, "0123456789") == "" {
+			return "CWE-" + x
+		}
+		return ""
+	case float64:
+		if x > 0 {
+			return fmt.Sprintf("CWE-%d", int(x))
+		}
+		return ""
+	case int:
+		if x > 0 {
+			return fmt.Sprintf("CWE-%d", x)
+		}
+		return ""
+	case []any:
+		for _, e := range x {
+			if c := firstCWE(e); c != "" {
+				return c
+			}
+		}
+	case []string:
+		for _, e := range x {
+			if c := firstCWE(e); c != "" {
+				return c
+			}
+		}
+	}
+	return ""
 }

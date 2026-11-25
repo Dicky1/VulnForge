@@ -27,3 +27,19 @@ func TestValidateFindings(t *testing.T) {
 		t.Fatalf("got %q tokens=%d err=%v", got, c.TokenUsed(), err)
 	}
 }
+
+func TestSecureEndpoint(t *testing.T) {
+	for in, want := range map[string]bool{"http://localhost:20128": true, "http://127.0.0.1:1": true, "https://router.example.com": true, "http://router.example.com": false, "ftp://x": false} {
+		if got := SecureEndpoint(in); got != want {
+			t.Errorf("SecureEndpoint(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestClientRejectsUnsafeCredentialEndpoint(t *testing.T) {
+	for _, endpoint := range []string{"http://router.example.test", "https://", "https://user:password@example.test"} {
+		if _, err := NewClient(endpoint, "test-key", "test/model", time.Second, 0); err == nil {
+			t.Errorf("accepted invalid endpoint %q", endpoint)
+		}
+	}
+}

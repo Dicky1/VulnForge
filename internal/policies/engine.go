@@ -56,6 +56,13 @@ func (pe *PolicyEngine) LoadPolicy(path string) (*Policy, error) {
 	}
 	d.Policy.Filtering = d.Filtering
 	d.Policy.Frameworks = d.Compliance.Frameworks
+	// Severities are compared against lowercase constants; accept "Critical"
+	// / "HIGH" in YAML instead of silently treating them as unknown (rank 0),
+	// which made minimum_severity drop every finding.
+	d.Policy.Filtering.MinimumSeverity = models.Severity(strings.ToLower(strings.TrimSpace(string(d.Policy.Filtering.MinimumSeverity))))
+	for i := range d.Policy.Rules {
+		d.Policy.Rules[i].Severity = models.Severity(strings.ToLower(strings.TrimSpace(string(d.Policy.Rules[i].Severity))))
+	}
 	if es := pe.ValidatePolicy(&d.Policy); len(es) > 0 {
 		return nil, fmt.Errorf("invalid policy: %s: %s", es[0].Field, es[0].Message)
 	}
@@ -79,6 +86,12 @@ func (pe *PolicyEngine) ValidatePolicy(p *Policy) []PolicyError {
 				out = append(out, PolicyError{prefix + ".patterns", err.Error()})
 			}
 		}
+		if r.Severity != "" && severityRank(r.Severity) == 0 {
+			out = append(out, PolicyError{prefix + ".severity", "must be critical, high, medium, or low"})
+		}
+	}
+	if p.Filtering.MinimumSeverity != "" && severityRank(p.Filtering.MinimumSeverity) == 0 {
+		out = append(out, PolicyError{"filtering.minimum_severity", "must be critical, high, medium, or low"})
 	}
 	return out
 }
@@ -137,10 +150,15 @@ func (pe *PolicyEngine) ApplyPolicy(findings []models.Finding, p *Policy) []mode
 	}
 	return out
 }
+
+// excludedPath matches patterns against whole path segments ("vendor/"
+// excludes ".../vendor/x.go" but not ".../vendored_api.go"; ".git/" no longer
+// hides ".github/").
 func excludedPath(path string, patterns []string) bool {
-	p := filepath.ToSlash(path)
+	p := "/" + strings.Trim(filepath.ToSlash(path), "/") + "/"
 	for _, x := range patterns {
-		if strings.Contains(p, strings.Trim(filepath.ToSlash(x), "/")) {
+		x = strings.Trim(filepath.ToSlash(strings.TrimSpace(x)), "/")
+		if x != "" && strings.Contains(p, "/"+x+"/") {
 			return true
 		}
 	}

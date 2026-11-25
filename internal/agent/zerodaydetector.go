@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -55,6 +56,7 @@ func DetectZeroDayPatterns(ctx context.Context, target string) ([]models.Finding
 		}
 		defer f.Close()
 		s := bufio.NewScanner(f)
+		s.Buffer(make([]byte, 64*1024), (2<<20)+1)
 		line := 0
 		for s.Scan() {
 			line++
@@ -65,8 +67,8 @@ func DetectZeroDayPatterns(ctx context.Context, target string) ([]models.Finding
 			}
 			for _, p := range zeroPatterns {
 				if p.re.MatchString(text) {
-					sum := sha256.Sum256([]byte(p.name + path + text))
-					out = append(out, models.Finding{ID: hex.EncodeToString(sum[:8]), Title: "Potential zero-day: " + p.name, Description: p.desc, Severity: models.SeverityHigh, CVSSBase: 8.1, CWE: p.cwe, MITRETechniques: []string{p.mitre}, SourceTool: "zeroday-detector", Language: sourceLanguage(path), FilePath: path, LineNumber: line, CodeSnippet: strings.TrimSpace(text), AIConfidence: .75, IsZeroDay: true, Remediation: "Review the complete data and authorization flow; replace custom controls with well-tested, fail-closed primitives and add adversarial tests.", CreatedAt: time.Now().UTC()})
+					sum := sha256.Sum256([]byte(p.name + path + strconv.Itoa(line) + text))
+					out = append(out, models.Finding{ID: hex.EncodeToString(sum[:8]), Title: "Unverified security hypothesis: " + p.name, Description: p.desc, Severity: models.SeverityLow, CVSSBase: 0, CWE: p.cwe, MITRETechniques: []string{p.mitre}, SourceTool: "zeroday-detector", Language: sourceLanguage(path), FilePath: path, LineNumber: line, CodeSnippet: strings.TrimSpace(text), AIConfidence: 0, IsZeroDay: true, Remediation: "Review the complete data and authorization flow; replace custom controls with well-tested, fail-closed primitives and add adversarial tests.", CreatedAt: time.Now().UTC()})
 					break
 				}
 			}

@@ -72,14 +72,12 @@ func (d *SecretDetector) Scan(ctx context.Context, target string) ([]models.Find
 		}
 		defer f.Close()
 		s := bufio.NewScanner(f)
-		s.Buffer(make([]byte, 64*1024), 1024*1024)
+		s.Buffer(make([]byte, 64*1024), (2<<20)+1)
 		line := 0
 		for s.Scan() {
 			line++
 			text := s.Text()
-			if placeholders.MatchString(text) {
-				continue
-			}
+
 			matched := false
 			for _, p := range secretPatterns {
 				if p.re.MatchString(text) {
@@ -94,7 +92,7 @@ func (d *SecretDetector) Scan(ctx context.Context, target string) ([]models.Find
 				continue
 			}
 			for _, m := range assignmentString.FindAllStringSubmatch(text, -1) {
-				if shannonEntropy(m[1]) > d.EntropyThreshold {
+				if !placeholders.MatchString(m[1]) && shannonEntropy(m[1]) > d.EntropyThreshold {
 					finding := languageFinding("secret-detector", languageFromPath(path), "high-entropy-secret", path, line, "High-entropy credential candidate", "A high-entropy string may be a hardcoded credential.", "HIGH", redact(text), "CWE-798")
 					finding.Remediation = "Verify the value, rotate it if active, and store secrets outside source control."
 					out = append(out, finding)

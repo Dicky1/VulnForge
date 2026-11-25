@@ -2,17 +2,19 @@ package scanner
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
 func TestDASTRejectsCrossOriginRedirect(t *testing.T) {
-	hit := false
-	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit = true }))
+	var hit atomic.Bool
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit.Store(true) }))
 	defer other.Close()
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, other.URL, http.StatusFound)
@@ -22,7 +24,7 @@ func TestDASTRejectsCrossOriginRedirect(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "redirect was rejected") {
 		t.Fatalf("expected out-of-scope redirect error, got %v", err)
 	}
-	if hit {
+	if hit.Load() {
 		t.Fatal("DAST followed a redirect to an unrelated origin")
 	}
 }
@@ -33,8 +35,32 @@ func TestDASTDoesNotLeakCookieOrQuery(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
-	// The test server's certificate is intentionally self-signed. Instead of
-	// disabling TLS verification, exercise the scope and cookie helpers.
+	// Use the local test certificate as a trust anchor, never skip verification.
+	base := srv.Client().Transport.(*http.Transport)
+	out, err := (BaselineDAST{Timeout: time.Second}).scanWithTransport(context.Background(), srv.URL+"/?token=supersecret", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"highly-sensitive-value", "supersecret"} {
+		if strings.Contains(string(encoded), secret) {
+			t.Fatalf("secret leaked into report")
+		}
+	}
+	for _, want := range []string{"Cookie lacks security attributes", "Cookie has no SameSite attribute", "Missing Strict-Transport-Security"} {
+		if !strings.Contains(string(encoded), want) {
+			t.Errorf("missing finding %q", want)
+		}
+	}
+	if strings.Contains(string(encoded), "HTTPS not enforced") {
+		t.Fatal("false HTTPS finding")
+	}
+	if _, err := (BaselineDAST{Timeout: time.Second}).Scan(context.Background(), srv.URL); err == nil {
+		t.Fatal("untrusted certificate accepted")
+	}
 	origin, _ := url.Parse("https://example.com/?token=supersecret")
 	next, _ := url.Parse("https://example.com/redirect")
 	if !sameDASTScope(origin, next) {
@@ -59,8 +85,12 @@ func TestDASTFindingsDoNotContainQuery(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
 	defer srv.Close()
 	result, err := (BaselineDAST{Timeout: time.Second}).Scan(context.Background(), srv.URL+"/?token=topsecret")
-	if err != nil { t.Fatal(err) }
-	if len(result.Findings) == 0 { t.Fatal("expected baseline findings") }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Findings) == 0 {
+		t.Fatal("expected baseline findings")
+	}
 	for _, finding := range result.Findings {
 		if strings.Contains(finding.FilePath, "topsecret") || strings.Contains(finding.Description, "topsecret") {
 			t.Fatalf("query secret leaked: %+v", finding)

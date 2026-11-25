@@ -35,7 +35,23 @@ type Finding struct {
 	RemediationSuggestions []RemediationSuggestion `json:"remediation_suggestions,omitempty"`
 	Compliance             map[string][]string     `json:"compliance,omitempty"`
 	CVSSVector             string                  `json:"cvss_vector,omitempty"`
+	DASTEvidence           *DASTEvidence           `json:"dast_evidence,omitempty"`
 	CreatedAt              time.Time               `json:"created_at"`
+}
+
+type DASTEndpoint struct {
+	RequestedURL string `json:"requested_url" xml:"requestedURL"`
+	FinalURL     string `json:"final_url,omitempty" xml:"finalURL,omitempty"`
+	StatusCode   int    `json:"status_code,omitempty" xml:"statusCode,omitempty"`
+	Error        string `json:"error,omitempty" xml:"error,omitempty"`
+}
+
+type DASTEvidence struct {
+	Endpoint          DASTEndpoint `json:"endpoint" xml:"endpoint"`
+	Method            string       `json:"method" xml:"method"`
+	HeaderName        string       `json:"header_name,omitempty" xml:"headerName,omitempty"`
+	CookieName        string       `json:"cookie_name,omitempty" xml:"cookieName,omitempty"`
+	MissingAttributes []string     `json:"missing_attributes,omitempty" xml:"missingAttribute,omitempty"`
 }
 
 type RemediationSuggestion struct {
@@ -65,10 +81,12 @@ type ComplianceReport struct {
 }
 
 type ToolOutput struct {
-	Tool     string          `json:"tool"`
-	Findings []Finding       `json:"findings"`
-	RawJSON  json.RawMessage `json:"raw_json,omitempty"`
-	ExitCode int             `json:"exit_code"`
+	Tool      string          `json:"tool"`
+	TargetURL string          `json:"target_url,omitempty"`
+	Endpoint  *DASTEndpoint   `json:"endpoint,omitempty"`
+	Findings  []Finding       `json:"findings"`
+	RawJSON   json.RawMessage `json:"raw_json,omitempty"`
+	ExitCode  int             `json:"exit_code"`
 }
 
 type ScanConfig struct {
@@ -88,6 +106,10 @@ type Report struct {
 	ID                string             `json:"id,omitempty" xml:"id,omitempty"`
 	Timestamp         time.Time          `json:"timestamp"`
 	TargetPath        string             `json:"target_path"`
+	DASTTargetURL     string             `json:"dast_target_url,omitempty"`
+	DASTEndpoints     []DASTEndpoint     `json:"dast_endpoints,omitempty"`
+	DASTSession       string             `json:"dast_session,omitempty"`
+	IncompleteChecks  []string           `json:"incomplete_checks,omitempty"`
 	Language          string             `json:"language"`
 	TotalFindings     int                `json:"total_findings"`
 	CriticalCount     int                `json:"critical_count"`

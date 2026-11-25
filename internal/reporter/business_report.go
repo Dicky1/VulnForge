@@ -23,7 +23,7 @@ func BuildBusinessReport(findings []models.Finding, ctx models.BusinessContext, 
 		b := models.BusinessFinding{FindingID: f.ID, Impact: impact, Financial: calc.GetFinancialImpact(f), Processes: mapper.MapFindingToBusinessProcess(f), Explanation: ExplainFinding(f), EstimatedEffort: effort.EstimateFixingEffort(f)}
 		b.PriorityScore = matrix.CalculatePriorityScore(f.Severity, impact.Level)
 		b.PriorityLabel = priorityLabel(b.PriorityScore)
-		if opts.EnablePOC {
+		if opts.EnablePOC && f.DASTEvidence == nil {
 			if p, err := (&POCGenerator{SkillLevel: opts.POCSkillLevel}).GeneratePOC(f); err == nil {
 				b.POC = &p
 			}

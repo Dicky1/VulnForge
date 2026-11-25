@@ -52,12 +52,15 @@ func (sg *SBOMGenerator) GenerateSBOM(target, format string) (SBOM, error) {
 	parsers["project.assets.json"] = parseProjectAssets
 	err := filepath.WalkDir(target, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil
+			return err
 		}
 		if d.IsDir() {
 			if path != target && (d.Name() == ".git" || d.Name() == "vendor" || d.Name() == "node_modules" || d.Name() == ".gocache" || d.Name() == "target") {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
 			return nil
 		}
 		if fn := parsers[d.Name()]; fn != nil {

@@ -94,6 +94,9 @@ func (b *BugBountyReporter) BuildBundle(findings []models.Finding, business *mod
 }
 
 func bountyExclusionReason(f models.Finding, target string) string {
+	if f.DASTEvidence != nil {
+		return "Passive response observation requires independent impact assessment."
+	}
 	if f.IsZeroDay || strings.EqualFold(f.SourceTool, "zeroday-detector") {
 		return "Heuristic zero-day hypothesis is not submission-ready without independent runtime reproduction and evidence."
 	}

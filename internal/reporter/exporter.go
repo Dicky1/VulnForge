@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/example/sast-dast-analyzer/internal/models"
+	"github.com/example/sast-dast-analyzer/internal/sbom"
 )
 
 type ReportExporter struct{}
@@ -47,6 +48,29 @@ func (*ReportExporter) ExportJSON(r models.Report, path string) error {
 	return write(path, b)
 }
 
+func (*ReportExporter) ExportSBOM(bom sbom.SBOM, format, dir string) (string, error) {
+	format = strings.ToLower(format)
+	name := "sbom.cyclonedx.json"
+	if strings.HasPrefix(format, "spdx") {
+		name = "sbom.spdx.json"
+	} else if strings.Contains(format, "xml") {
+		name = "sbom.cyclonedx.xml"
+	}
+	path := filepath.Join(dir, name)
+	var data []byte
+	var err error
+	if strings.HasSuffix(name, ".xml") {
+		data, err = xml.MarshalIndent(bom, "", "  ")
+		data = append([]byte(xml.Header), data...)
+	} else {
+		data, err = json.MarshalIndent(bom, "", "  ")
+	}
+	if err != nil {
+		return "", err
+	}
+	return path, write(path, data)
+}
+
 func (*ReportExporter) ExportHTML(r models.Report, path string) error {
 	return renderDashboard(r, path)
 }
@@ -58,6 +82,12 @@ func (*ReportExporter) ExportPDF(r models.Report, path string) error {
 	pdf.CellFormat(0, 12, "Security Analysis Report", "", 1, "L", false, 0, "")
 	pdf.Ln(2)
 	metaRow(pdf, "Target", r.TargetPath)
+	if r.DASTTargetURL != "" && r.DASTTargetURL != r.TargetPath {
+		metaRow(pdf, "DAST endpoint", r.DASTTargetURL)
+	}
+	if len(r.IncompleteChecks) > 0 {
+		metaRow(pdf, "Incomplete checks", strings.Join(r.IncompleteChecks, ", "))
+	}
 	metaRow(pdf, "Languages", r.Language)
 	metaRow(pdf, "Generated", r.Timestamp.Format("2006-01-02 15:04 UTC"))
 	metaRow(pdf, "Duration", r.Duration)
@@ -70,6 +100,24 @@ func (*ReportExporter) ExportPDF(r models.Report, path string) error {
 		pdf.CellFormat(16, 5.5, fmt.Sprintf(" %d ", counts[s]), "", 0, "L", false, 0, "")
 	}
 	pdf.Ln(10)
+
+	if len(r.DASTEndpoints) > 0 {
+		sectionHeader(pdf, "HTTP Endpoints")
+		pdf.SetFont("Arial", "", 9)
+		for _, endpoint := range r.DASTEndpoints {
+			pdf.MultiCell(0, 5, endpoint.RequestedURL, "", "L", false)
+			if endpoint.FinalURL != "" && endpoint.FinalURL != endpoint.RequestedURL {
+				pdf.MultiCell(0, 5, "Final URL: "+endpoint.FinalURL, "", "L", false)
+			}
+			if endpoint.StatusCode > 0 {
+				pdf.MultiCell(0, 5, fmt.Sprintf("HTTP %d", endpoint.StatusCode), "", "L", false)
+			}
+			if endpoint.Error != "" {
+				pdf.MultiCell(0, 5, endpoint.Error, "", "L", false)
+			}
+			pdf.Ln(2)
+		}
+	}
 
 	if r.BusinessReport != nil {
 		s := r.BusinessReport.ExecutiveSummary
@@ -138,6 +186,9 @@ func (*ReportExporter) ExportSARIF(r models.Report, path string) error {
 		rules[rule] = map[string]any{"id": rule, "name": f.Title, "shortDescription": map[string]string{"text": f.Description}, "helpUri": firstLink(f)}
 		location := map[string]any{"physicalLocation": map[string]any{"artifactLocation": map[string]string{"uri": filepath.ToSlash(f.FilePath)}, "region": map[string]int{"startLine": max(f.LineNumber, 1)}}}
 		result := map[string]any{"ruleId": rule, "level": sarifLevel(f.Severity), "message": map[string]string{"text": f.Description}, "locations": []any{location}}
+		if f.DASTEvidence != nil {
+			result["properties"] = map[string]any{"dastEvidence": f.DASTEvidence}
+		}
 		if f.Remediation != "" {
 			result["fixes"] = []any{map[string]any{"description": map[string]string{"text": f.Remediation}}}
 		}
@@ -149,6 +200,17 @@ func (*ReportExporter) ExportSARIF(r models.Report, path string) error {
 	}
 	driver := map[string]any{"name": "sast-dast-analyzer", "informationUri": "https://github.com/", "rules": ruleList}
 	run := map[string]any{"tool": map[string]any{"driver": driver}, "results": results}
+	if len(r.DASTEndpoints) > 0 {
+		run["properties"] = map[string]any{"dastEndpoints": r.DASTEndpoints, "dastSession": r.DASTSession}
+	}
+	if len(r.IncompleteChecks) > 0 {
+		run["invocations"] = []any{map[string]any{
+			"executionSuccessful": false,
+			"toolExecutionNotifications": []any{map[string]any{
+				"level": "warning", "message": map[string]string{"text": "Incomplete checks: " + strings.Join(r.IncompleteChecks, ", ")},
+			}},
+		}}
+	}
 	doc := map[string]any{"version": "2.1.0", "$schema": "https://json.schemastore.org/sarif-2.1.0.json", "runs": []any{run}}
 	b, e := json.MarshalIndent(doc, "", "  ")
 	if e != nil {
@@ -158,31 +220,37 @@ func (*ReportExporter) ExportSARIF(r models.Report, path string) error {
 }
 
 type xmlReport struct {
-	XMLName   xml.Name     `xml:"securityReport"`
-	Timestamp string       `xml:"timestamp"`
-	Target    string       `xml:"target"`
-	Languages string       `xml:"languages"`
-	Total     int          `xml:"total"`
-	Critical  int          `xml:"critical"`
-	High      int          `xml:"high"`
-	Findings  []xmlFinding `xml:"findings>finding"`
+	XMLName       xml.Name              `xml:"securityReport"`
+	Timestamp     string                `xml:"timestamp"`
+	Target        string                `xml:"target"`
+	DASTTarget    string                `xml:"dastTarget,omitempty"`
+	DASTEndpoints []models.DASTEndpoint `xml:"dastEndpoints>endpoint,omitempty"`
+	DASTSession   string                `xml:"dastSession,omitempty"`
+	Incomplete    []string              `xml:"incompleteChecks>check,omitempty"`
+	Languages     string                `xml:"languages"`
+	Total         int                   `xml:"total"`
+	Critical      int                   `xml:"critical"`
+	High          int                   `xml:"high"`
+	Findings      []xmlFinding          `xml:"findings>finding"`
 }
 type xmlFinding struct {
-	ID          string  `xml:"id,attr"`
-	Title       string  `xml:"title"`
-	Severity    string  `xml:"severity"`
-	CWE         string  `xml:"cwe"`
-	File        string  `xml:"file"`
-	Description string  `xml:"description"`
-	Remediation string  `xml:"remediation"`
-	Line        int     `xml:"line"`
-	CVSS        float64 `xml:"cvss"`
+	ID           string               `xml:"id,attr"`
+	Title        string               `xml:"title"`
+	Severity     string               `xml:"severity"`
+	CWE          string               `xml:"cwe"`
+	File         string               `xml:"file"`
+	Description  string               `xml:"description"`
+	Remediation  string               `xml:"remediation"`
+	Line         int                  `xml:"line"`
+	CVSS         float64              `xml:"cvss"`
+	DASTEvidence *models.DASTEvidence `xml:"dastEvidence,omitempty"`
 }
 
 func (*ReportExporter) ExportXML(r models.Report, path string) error {
-	x := xmlReport{Timestamp: r.Timestamp.Format(time.RFC3339), Target: r.TargetPath, Languages: r.Language, Total: r.TotalFindings, Critical: r.CriticalCount, High: r.HighCount}
+	x := xmlReport{Timestamp: r.Timestamp.Format(time.RFC3339), Target: r.TargetPath, DASTTarget: r.DASTTargetURL, Incomplete: r.IncompleteChecks, Languages: r.Language, Total: r.TotalFindings, Critical: r.CriticalCount, High: r.HighCount}
+	x.DASTEndpoints, x.DASTSession = r.DASTEndpoints, r.DASTSession
 	for _, f := range r.Findings {
-		x.Findings = append(x.Findings, xmlFinding{ID: f.ID, Title: f.Title, Severity: string(f.Severity), CWE: f.CWE, File: f.FilePath, Description: f.Description, Remediation: f.Remediation, Line: f.LineNumber, CVSS: f.CVSSBase})
+		x.Findings = append(x.Findings, xmlFinding{ID: f.ID, Title: f.Title, Severity: string(f.Severity), CWE: f.CWE, File: f.FilePath, Description: f.Description, Remediation: f.Remediation, Line: f.LineNumber, CVSS: f.CVSSBase, DASTEvidence: f.DASTEvidence})
 	}
 	b, e := xml.MarshalIndent(x, "", "  ")
 	if e != nil {

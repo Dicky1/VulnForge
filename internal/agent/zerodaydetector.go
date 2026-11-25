@@ -42,11 +42,11 @@ func DetectZeroDayPatterns(ctx context.Context, target string) ([]models.Finding
 			}
 			return nil
 		}
-		if !sourceExt(filepath.Ext(path)) {
+		if !d.Type().IsRegular() || !sourceExt(filepath.Ext(path)) {
 			return nil
 		}
 		info, e := d.Info()
-		if e != nil || info.Size() > 2<<20 {
+		if e != nil || !info.Mode().IsRegular() || info.Size() > 2<<20 {
 			return nil
 		}
 		f, e := os.Open(path)
@@ -71,7 +71,7 @@ func DetectZeroDayPatterns(ctx context.Context, target string) ([]models.Finding
 				}
 			}
 		}
-		return nil
+		return s.Err()
 	})
 	return AnalyzeExploitChains(out), err
 }

@@ -45,7 +45,7 @@ func runWithEnv(ctx context.Context, timeout time.Duration, dir string, env []st
 
 // interpretExecResult normalizes scanner output and errors.
 func interpretExecResult(ctx context.Context, b []byte, err error) (commandResult, error) {
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+	if ctx.Err() != nil {
 		return commandResult{b, -1}, ctx.Err()
 	}
 	if err == nil {

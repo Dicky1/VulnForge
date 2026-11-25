@@ -120,30 +120,21 @@ func (a *AIValidationAgent) ValidateFindingsInBatch(ctx context.Context, in []mo
 	// Start from the original findings so a batch that errors out falls back
 	// to its unvalidated findings instead of silently dropping them.
 	validated := append([]models.Finding(nil), in...)
-	keep := make([]bool, len(in))
-	var first error
+		var first error
 	for r := range results {
 		if r.err != nil {
 			if first == nil {
 				first = r.err
 			}
-			for i := r.start; i < r.start+r.count && i < len(keep); i++ {
-				keep[i] = true
-			}
 			continue
 		}
 		for i, f := range r.items {
 			validated[r.start+i] = f
-			keep[r.start+i] = f.AIConfidence >= a.ConfidenceThreshold
 		}
 	}
-	out := make([]models.Finding, 0, len(in))
-	for i, f := range validated {
-		if keep[i] {
-			out = append(out, f)
-		}
-	}
-	return out, first
+	// AI output is advisory. Keep every finding in the evidence record;
+	// confidence thresholds belong in presentation or triage, never deletion.
+	return validated, first
 }
 func (a *AIValidationAgent) validateBatch(ctx context.Context, in []models.Finding) ([]models.Finding, error) {
 	prompt := buildLanguageAwarePrompt(in)

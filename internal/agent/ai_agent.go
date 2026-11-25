@@ -121,7 +121,7 @@ func (a *AIValidationAgent) ValidateFindingsInBatch(ctx context.Context, in []mo
 	// Start from the original findings so a batch that errors out falls back
 	// to its unvalidated findings instead of silently dropping them.
 	validated := append([]models.Finding(nil), in...)
-		var first error
+	var first error
 	for r := range results {
 		if r.err != nil {
 			if first == nil {
@@ -207,10 +207,16 @@ func buildLanguageAwarePrompt(in []models.Finding) string {
 		fmt.Fprintf(&b, "- %s (finding indexes %v): focus on %s.\n", lang, indexes, contexts[lang])
 	}
 	b.WriteString("Return ONLY a JSON array with keys finding_index, is_valid, confidence, reason, exploitation_feasibility, zero_day_potential. is_valid and zero_day_potential MUST be JSON boolean literals true or false, never numbers or explanatory text. confidence MUST be a number from 0 to 1. Preserve the original finding indexes and do not use markdown. Findings:\n")
-	safe := make([]models.Finding, len(in))
-	for i, finding := range in {
-		safe[i] = finding
-		safe[i].CodeSnippet = "[omitted]"
+	type promptFinding struct {
+		ID string `json:"id"`
+		Title string `json:"title"`
+		Language string `json:"language"`
+		Severity models.Severity `json:"severity"`
+		CWE string `json:"cwe"`
+	}
+	safe := make([]promptFinding, 0, len(in))
+	for _, f := range in {
+		safe = append(safe, promptFinding{f.ID, f.Title, f.Language, f.Severity, f.CWE})
 	}
 	payload, _ := json.Marshal(safe)
 	b.Write(payload)

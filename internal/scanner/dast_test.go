@@ -4,10 +4,10 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
-	"net/url"
 )
 
 func TestDASTRejectsCrossOriginRedirect(t *testing.T) {
@@ -19,7 +19,7 @@ func TestDASTRejectsCrossOriginRedirect(t *testing.T) {
 	}))
 	defer origin.Close()
 	_, err := (BaselineDAST{Timeout: time.Second}).Scan(context.Background(), origin.URL)
-	if err == nil || !strings.Contains(err.Error(), "authorized origin") {
+	if err == nil || !strings.Contains(err.Error(), "redirect was rejected") {
 		t.Fatalf("expected out-of-scope redirect error, got %v", err)
 	}
 	if hit {

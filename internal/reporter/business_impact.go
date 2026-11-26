@@ -74,6 +74,18 @@ func classify(f models.Finding) string {
 	switch {
 	case strings.Contains(v, "sql") || strings.Contains(v, "cwe-89"):
 		return "sql injection"
+	case strings.Contains(v, "cross-site scripting") || strings.Contains(v, "xss") || strings.Contains(v, "cwe-79"):
+		return "cross-site scripting"
+	case strings.Contains(v, "template injection") || strings.Contains(v, "ssti") || strings.Contains(v, "cwe-1336"):
+		return "server-side template injection"
+	case strings.Contains(v, "path traversal") || strings.Contains(v, "directory traversal") || strings.Contains(v, "cwe-22"):
+		return "path traversal"
+	case strings.Contains(v, "open redirect") || strings.Contains(v, "cwe-601"):
+		return "open redirect"
+	case strings.Contains(v, "crlf") || strings.Contains(v, "response splitting") || strings.Contains(v, "cwe-113"):
+		return "crlf injection"
+	case strings.Contains(v, "host header") || strings.Contains(v, "cwe-644"):
+		return "host header injection"
 	case strings.Contains(v, "auth") && strings.Contains(v, "authoriz"):
 		return "authorization bypass"
 	case strings.Contains(v, "auth"):

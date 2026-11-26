@@ -36,7 +36,11 @@ func (b *BugBountyReporter) GenerateReadyToSubmitReport(f models.Finding, busine
 	if platform == "" {
 		platform = "hackerone"
 	}
-	r := models.BugBountyReport{ID: f.ID, Platform: platform, Title: GenerateCompellingTitle(f), Severity: strings.ToUpper(string(f.Severity)), SeverityJustification: severity, VulnerabilityType: titleKind(classify(f)), AffectedEndpoint: endpoint, Description: "The analyzer identified a potential " + classify(f) + " at " + f.FilePath + ". Runtime exploitability and the deployed endpoint must be independently verified before submission.", StepsToReproduce: steps, ProofOfConcept: poc, Impact: BuildImpactDescription(f, business), AttackScenarios: []string{"An attacker who can reach the verified affected surface may attempt to abuse the identified control weakness under the conditions documented by runtime validation."}, References: refs, Scope: scope, GeneratedAt: time.Now().UTC()}
+	description := "The analyzer identified a potential " + classify(f) + " at " + f.FilePath + ". Runtime exploitability and the deployed endpoint must be independently verified before submission."
+	if f.DASTEvidence != nil && f.DASTEvidence.PayloadClass != "" {
+		description = "An active black-box probe confirmed a " + classify(f) + " at " + endpoint + " (captured request/response attached below). The program's exact scope and business impact must still be independently verified before submission."
+	}
+	r := models.BugBountyReport{ID: f.ID, Platform: platform, Title: GenerateCompellingTitle(f), Severity: strings.ToUpper(string(f.Severity)), SeverityJustification: severity, VulnerabilityType: titleKind(classify(f)), AffectedEndpoint: endpoint, Description: description, StepsToReproduce: steps, ProofOfConcept: poc, Impact: BuildImpactDescription(f, business), AttackScenarios: []string{"An attacker who can reach the verified affected surface may attempt to abuse the identified control weakness under the conditions documented by runtime validation."}, References: refs, Scope: scope, GeneratedAt: time.Now().UTC()}
 	if program != nil {
 		r.Program = program.Name
 	}
@@ -44,7 +48,8 @@ func (b *BugBountyReporter) GenerateReadyToSubmitReport(f models.Finding, busine
 		r.AffectedUsers = business.Impact.AffectedUsers
 	}
 	r.Remediation = bountyRemediation(f)
-	r.Evidence = []models.BountyEvidence{{Type: "source", Path: fmt.Sprintf("%s:%d", f.FilePath, f.LineNumber), Note: "Static source location reported by " + f.SourceTool}, {Type: "scanner", Note: "Automated evidence only; attach a sanitized runtime request/response or transaction trace before submission."}}
+	r.Evidence = []models.BountyEvidence{{Type: "source", Path: fmt.Sprintf("%s:%d", f.FilePath, f.LineNumber), Note: "Static source location reported by " + f.SourceTool}}
+	r.Evidence = append(r.Evidence, bountyRuntimeEvidence(f)...)
 	r.QualityChecks, r.BlockingReasons = qualityChecks(r)
 	adapter := adapterFor(platform)
 	if err := adapter.ValidateReport(r); err != nil {
@@ -94,7 +99,15 @@ func (b *BugBountyReporter) BuildBundle(findings []models.Finding, business *mod
 }
 
 func bountyExclusionReason(f models.Finding, target string) string {
-	if f.DASTEvidence != nil {
+	if f.DASTEvidence != nil && f.DASTEvidence.PayloadClass == "" {
+		// Headers/cookies observed on an unmodified request (PayloadClass
+		// empty) show a missing control, not a reproduced exploit — still
+		// needs a human to assess real-world impact before submission. A
+		// non-empty PayloadClass means an active probe (internal/payload)
+		// produced this evidence and a scanner-side detector already
+		// confirmed a concrete effect (reflected payload, leaked DB error,
+		// off-host redirect, OOB callback, etc.) — that is itself
+		// reproducible impact evidence, so it is not excluded here.
 		return "Passive response observation requires independent impact assessment."
 	}
 	if f.IsZeroDay || strings.EqualFold(f.SourceTool, "zeroday-detector") {
@@ -154,6 +167,28 @@ func findingEndpoint(f models.Finding) string {
 	}
 	return "<NOT_ESTABLISHED_FROM_STATIC_ANALYSIS>"
 }
+
+// bountyRuntimeEvidence builds the attached-evidence entries actually
+// backed by a captured request/response. A placeholder note (nothing
+// attached yet) is returned when f carries no DASTEvidence, or when the
+// evidence is a purely passive observation (PayloadClass empty — see
+// bountyExclusionReason) rather than a confirmed active probe result.
+func bountyRuntimeEvidence(f models.Finding) []models.BountyEvidence {
+	ev := f.DASTEvidence
+	if ev == nil || ev.PayloadClass == "" {
+		return []models.BountyEvidence{{Type: "scanner", Note: "Automated evidence only; attach a sanitized runtime request/response or transaction trace before submission."}}
+	}
+	note := "Confirmed via active black-box probe (" + ev.PayloadClass + " at " + ev.InjectionPoint + "); request/response captured and redacted automatically."
+	if ev.OOBInteraction != nil {
+		note += fmt.Sprintf(" Out-of-band callback received from %s (%s) at %s.", ev.OOBInteraction.SourceIP, ev.OOBInteraction.Protocol, ev.OOBInteraction.ReceivedAt.Format(time.RFC3339))
+	}
+	out := []models.BountyEvidence{{Type: "runtime", Note: note}}
+	if ev.CurlCommand != "" {
+		out = append(out, models.BountyEvidence{Type: "curl", Note: ev.CurlCommand})
+	}
+	return out
+}
+
 func bountyRemediation(f models.Finding) []string {
 	var out []string
 	if f.Remediation != "" {
@@ -182,7 +217,14 @@ func qualityChecks(r models.BugBountyReport) ([]models.QualityCheck, []string) {
 	add("specific_title", !generic, "Title must identify the weakness, location, and demonstrated impact.")
 	add("detailed_steps", len(r.StepsToReproduce) >= 3, "At least three reproducible steps are required.")
 	add("verified_endpoint", r.AffectedEndpoint != "" && !strings.Contains(r.AffectedEndpoint, "<"), "Exact affected production endpoint is not established.")
-	add("runtime_evidence", false, "Attach sanitized runtime evidence demonstrating actual impact; static scanner output alone is insufficient.")
+	hasRuntimeEvidence := false
+	for _, e := range r.Evidence {
+		if e.Type == "runtime" || e.Type == "curl" {
+			hasRuntimeEvidence = true
+			break
+		}
+	}
+	add("runtime_evidence", hasRuntimeEvidence, "Attach sanitized runtime evidence demonstrating actual impact; static scanner output alone is insufficient.")
 	add("scope", r.Scope.Status == "in_scope", "Program scope is not confirmed in-scope.")
 	return checks, blocked
 }

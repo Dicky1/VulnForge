@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
@@ -21,6 +22,7 @@ import (
 	"github.com/example/sast-dast-analyzer/internal/detector"
 	"github.com/example/sast-dast-analyzer/internal/integrations"
 	"github.com/example/sast-dast-analyzer/internal/models"
+	"github.com/example/sast-dast-analyzer/internal/oob"
 	"github.com/example/sast-dast-analyzer/internal/optimizer"
 	"github.com/example/sast-dast-analyzer/internal/policies"
 	"github.com/example/sast-dast-analyzer/internal/remediator"
@@ -41,6 +43,9 @@ type options struct {
 	dastTargets, dastSession                                                                                           string
 	dastInterval                                                                                                       time.Duration
 	dastMaxRequests                                                                                                    int
+	dastActive                                                                                                         bool
+	oobCallbackHost, oobListenAddr                                                                                     string
+	oobWait                                                                                                            time.Duration
 }
 type validationClient interface {
 	ValidateFindings(context.Context, string) (string, error)
@@ -87,6 +92,10 @@ func parseOptions(args []string) (options, error) {
 	fs.DurationVar(&o.dastInterval, "dast-interval", 250*time.Millisecond, "minimum interval between DAST requests, including redirects")
 	fs.IntVar(&o.dastMaxRequests, "dast-max-requests", 100, "DAST request budget, including redirects")
 	fs.BoolVar(&o.dastDirect, "dast-no-proxy", false, "ignore proxy environment settings for DAST")
+	fs.BoolVar(&o.dastActive, "active", false, "enable opt-in active payload injection against existing query parameters (dast subcommand, single --dast-url only)")
+	fs.StringVar(&o.oobCallbackHost, "dast-oob-host", "", "externally reachable host used to build out-of-band (OOB) callback URLs for blind SSRF/XXE/command-injection probes")
+	fs.StringVar(&o.oobListenAddr, "dast-oob-listen", "", "local address to bind a built-in OOB HTTP listener (e.g. :8080); requires --dast-oob-host to be reachable at that address")
+	fs.DurationVar(&o.oobWait, "dast-oob-wait", 3*time.Second, "how long to wait for an out-of-band callback per probe")
 	fs.BoolVar(&o.track, "track-history", false, "save report in SQLite history")
 	fs.StringVar(&o.dbPath, "database", "", "SQLite database path")
 	fs.StringVar(&o.containerImage, "scan-containers", "", "explicit Docker/OCI image reference")
@@ -163,6 +172,17 @@ func run(ctx context.Context, logger *log.Logger, args []string) error {
 	}
 	if o.dastSession != "" && !o.dastOnly {
 		return errors.New("use the dast subcommand for an authenticated scan")
+	}
+	if o.dastActive {
+		if !o.dastOnly {
+			return errors.New("--active requires the dast subcommand")
+		}
+		if o.dastURL == "" || o.dastTargets != "" {
+			return errors.New("--active requires a single --dast-url (not --dast-targets)")
+		}
+	}
+	if o.oobListenAddr != "" && !o.dastActive {
+		return errors.New("--dast-oob-listen requires --active")
 	}
 	hasSource := o.target != ""
 	if !hasSource && (o.sbomFormat != "" || o.githubActions || o.gitlabCI || o.jenkins || o.preCommit) {
@@ -245,6 +265,19 @@ func run(ctx context.Context, logger *log.Logger, args []string) error {
 		}
 		if failed == len(results) {
 			dastErr = errors.New("DAST completed no endpoint checks")
+		}
+		if o.dastActive && dastErr == nil {
+			activeFindings, activeOutputs, e := runActiveDAST(ctx, o, time.Duration(cfg.DAST.TimeoutSeconds)*time.Second, logger)
+			if e != nil {
+				return fmt.Errorf("active DAST failed: %w", e)
+			}
+			findings = append(findings, activeFindings...)
+			for _, result := range activeOutputs {
+				if result.Endpoint != nil && result.Endpoint.Error != "" {
+					incompleteChecks = append(incompleteChecks, "active-dast:"+result.Endpoint.Error)
+				}
+			}
+			logger.Printf("active DAST sent %d request(s), found %d finding(s)", len(activeOutputs), len(activeFindings))
 		}
 	}
 	setupRequested := hasSource && cfg.SAST.Enabled && config.EnvBool("ANALYZER_AUTO_INSTALL", false)
@@ -514,6 +547,47 @@ func runDAST(ctx context.Context, o options, timeout time.Duration) ([]models.To
 		return nil, errors.New("DAST session must be bearer or cookie")
 	}
 	return (scanner.BaselineDAST{Timeout: timeout}).ScanTargets(ctx, origin, paths, scanner.DASTRunOptions{
+		Interval: o.dastInterval, MaxRequests: o.dastMaxRequests, Direct: o.dastDirect, SessionKind: o.dastSession, Session: session,
+	})
+}
+
+// runActiveDAST runs the opt-in active probe set against o.dastURL. When
+// o.oobListenAddr is set, it starts a local OOB HTTP listener for the
+// duration of the scan so blind SSRF/XXE/command-injection probes can be
+// confirmed; the listener is always shut down before returning, including
+// on error or cancellation.
+func runActiveDAST(ctx context.Context, o options, timeout time.Duration, logger *log.Logger) ([]models.Finding, []models.ToolOutput, error) {
+	var session string
+	switch o.dastSession {
+	case "":
+	case "bearer":
+		session = os.Getenv("VULNFORGE_DAST_BEARER_TOKEN")
+	case "cookie":
+		session = os.Getenv("VULNFORGE_DAST_COOKIE")
+	}
+	store := oob.NewStore()
+	active := scanner.ActiveDAST{Timeout: timeout, OOBCallbackHost: o.oobCallbackHost, OOBWait: o.oobWait, OOBStore: store}
+	if o.oobListenAddr != "" {
+		srv := oob.NewHTTPServerWithDomain(o.oobListenAddr, store, o.oobCallbackHost)
+		errCh := make(chan error, 1)
+		go func() { errCh <- srv.ListenAndServe() }()
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if e := srv.Shutdown(shutdownCtx); e != nil {
+				logger.Printf("oob listener shutdown: %v", e)
+			}
+		}()
+		select {
+		case e := <-errCh:
+			if e != nil && !errors.Is(e, http.ErrServerClosed) {
+				return nil, nil, fmt.Errorf("starting OOB listener on %s: %w", o.oobListenAddr, e)
+			}
+		case <-time.After(200 * time.Millisecond):
+			// Listener accepted the bind and is serving; proceed.
+		}
+	}
+	return active.ScanURL(ctx, o.dastURL, scanner.DASTRunOptions{
 		Interval: o.dastInterval, MaxRequests: o.dastMaxRequests, Direct: o.dastDirect, SessionKind: o.dastSession, Session: session,
 	})
 }

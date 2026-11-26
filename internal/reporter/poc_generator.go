@@ -8,6 +8,37 @@ import (
 
 type POCGenerator struct{ SkillLevel string }
 
+// activeFindingPOC builds a POC directly from a confirmed active black-box
+// probe, rather than a generic template: the request was actually sent and
+// the response actually observed, so the "steps" are a description of what
+// already happened, and CurlExample reproduces the exact same request.
+func activeFindingPOC(f models.Finding, skillLevel string) models.POC {
+	level, minutes := skillLevel, 10
+	if level == "" {
+		level = "intermediate"
+	}
+	ev := f.DASTEvidence
+	if ev == nil {
+		ev = &models.DASTEvidence{}
+	}
+	steps := []string{"Re-run the attached curl command against the same, currently-authorized target", "Compare the response against the captured evidence below"}
+	if ev.OOBInteraction != nil {
+		steps = append(steps, "Confirm a fresh out-of-band callback is received from the target when repeating the request")
+	}
+	p := models.POC{
+		Title:            "Active probe evidence: " + f.Title,
+		Description:      "Captured automatically by an authorized active black-box probe (" + ev.PayloadClass + " at " + ev.InjectionPoint + "); not a generic template.",
+		Prerequisites:    []string{"Written authorization to actively test the target", "The same target/endpoint, still in scope"},
+		StepByStep:       steps,
+		ExpectedResult:   "The same control weakness reproduces: " + f.Description,
+		CurlExample:      ev.CurlCommand,
+		SkillLevel:       level,
+		EstimatedMinutes: minutes,
+		SafetyNotice:     "This reproduces a non-destructive probe only. Re-run against systems you own or are explicitly authorized to test.",
+	}
+	return p
+}
+
 func (pg *POCGenerator) GeneratePOC(f models.Finding) (models.POC, error) {
 	level, minutes := pg.SkillLevel, 30
 	if level == "" {

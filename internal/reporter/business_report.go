@@ -23,9 +23,19 @@ func BuildBusinessReport(findings []models.Finding, ctx models.BusinessContext, 
 		b := models.BusinessFinding{FindingID: f.ID, Impact: impact, Financial: calc.GetFinancialImpact(f), Processes: mapper.MapFindingToBusinessProcess(f), Explanation: ExplainFinding(f), EstimatedEffort: effort.EstimateFixingEffort(f)}
 		b.PriorityScore = matrix.CalculatePriorityScore(f.Severity, impact.Level)
 		b.PriorityLabel = priorityLabel(b.PriorityScore)
-		if opts.EnablePOC && f.DASTEvidence == nil {
-			if p, err := (&POCGenerator{SkillLevel: opts.POCSkillLevel}).GeneratePOC(f); err == nil {
+		if opts.EnablePOC {
+			switch {
+			case f.DASTEvidence != nil && f.DASTEvidence.PayloadClass != "":
+				// A confirmed active-probe result already has a real,
+				// reproducible request — use it directly instead of a
+				// generic template, which could otherwise describe steps
+				// that don't match what was actually sent.
+				p := activeFindingPOC(f, opts.POCSkillLevel)
 				b.POC = &p
+			case f.DASTEvidence == nil:
+				if p, err := (&POCGenerator{SkillLevel: opts.POCSkillLevel}).GeneratePOC(f); err == nil {
+					b.POC = &p
+				}
 			}
 		}
 		result.Findings = append(result.Findings, b)

@@ -52,6 +52,66 @@ type DASTEvidence struct {
 	HeaderName        string       `json:"header_name,omitempty" xml:"headerName,omitempty"`
 	CookieName        string       `json:"cookie_name,omitempty" xml:"cookieName,omitempty"`
 	MissingAttributes []string     `json:"missing_attributes,omitempty" xml:"missingAttribute,omitempty"`
+
+	// Request/Response are a redacted, size-bounded capture of the exact
+	// HTTP exchange that produced this finding, so it can be reproduced
+	// and reviewed without re-running the scan.
+	Request  *RequestEvidence  `json:"request,omitempty" xml:"request,omitempty"`
+	Response *ResponseEvidence `json:"response,omitempty" xml:"response,omitempty"`
+	// Timestamp is when the evidence-producing request was made.
+	Timestamp time.Time `json:"timestamp,omitempty" xml:"timestamp,omitempty"`
+	// CurlCommand is a safely-quoted, reproducible curl invocation for the
+	// captured request. It never contains unredacted secrets.
+	CurlCommand string `json:"curl_command,omitempty" xml:"curlCommand,omitempty"`
+
+	// PayloadClass and InjectionPoint identify, for active findings, which
+	// payload engine class produced the evidence and where it was injected
+	// (e.g. "xss.reflected", "query:search").
+	PayloadClass   string `json:"payload_class,omitempty" xml:"payloadClass,omitempty"`
+	InjectionPoint string `json:"injection_point,omitempty" xml:"injectionPoint,omitempty"`
+
+	// OOBToken is the unique correlation token embedded in the request when
+	// this finding relies on out-of-band confirmation (blind SSRF/SSTI/XXE,
+	// async command injection, etc). OOBInteraction is filled in once a
+	// matching callback is observed by the listener.
+	OOBToken       string          `json:"oob_token,omitempty" xml:"oobToken,omitempty"`
+	OOBInteraction *OOBInteraction `json:"oob_interaction,omitempty" xml:"oobInteraction,omitempty"`
+}
+
+// HTTPHeader is a single captured header name/value pair. A slice is used
+// instead of map[string][]string so JSON/XML output preserves order and
+// XML can use a repeated element.
+type HTTPHeader struct {
+	Name  string `json:"name" xml:"name"`
+	Value string `json:"value" xml:"value"`
+}
+
+// RequestEvidence is a redacted, size-bounded capture of an HTTP request.
+type RequestEvidence struct {
+	Method          string       `json:"method" xml:"method"`
+	URL             string       `json:"url" xml:"url"`
+	Headers         []HTTPHeader `json:"headers,omitempty" xml:"headers>header,omitempty"`
+	Body            string       `json:"body,omitempty" xml:"body,omitempty"`
+	BodyTruncated   bool         `json:"body_truncated,omitempty" xml:"bodyTruncated,omitempty"`
+	RedactedHeaders []string     `json:"redacted_headers,omitempty" xml:"redactedHeaders>name,omitempty"`
+}
+
+// ResponseEvidence is a redacted, size-bounded capture of an HTTP response.
+type ResponseEvidence struct {
+	StatusCode    int          `json:"status_code" xml:"statusCode"`
+	Headers       []HTTPHeader `json:"headers,omitempty" xml:"headers>header,omitempty"`
+	Body          string       `json:"body,omitempty" xml:"body,omitempty"`
+	BodyTruncated bool         `json:"body_truncated,omitempty" xml:"bodyTruncated,omitempty"`
+}
+
+// OOBInteraction records a single out-of-band callback that correlates to a
+// finding's OOBToken, as observed by an internal/oob listener.
+type OOBInteraction struct {
+	Token      string    `json:"token" xml:"token"`
+	Protocol   string    `json:"protocol,omitempty" xml:"protocol,omitempty"`
+	SourceIP   string    `json:"source_ip,omitempty" xml:"sourceIP,omitempty"`
+	ReceivedAt time.Time `json:"received_at,omitempty" xml:"receivedAt,omitempty"`
+	RawRequest string    `json:"raw_request,omitempty" xml:"rawRequest,omitempty"`
 }
 
 type RemediationSuggestion struct {

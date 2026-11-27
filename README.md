@@ -73,7 +73,23 @@ Or on Linux / macOS:
 ./analyzer --target /path/to/project --output report.json
 ```
 
-### 2. Passive DAST Scan
+### 2. Black-Box AuthZ / Logic Probing (new)
+
+Authorized active (non-destructive) checks for BOLA/IDOR, parameter tampering, and race conditions:
+
+```powershell
+# AuthZ diff (BOLA/IDOR) with role matrix
+.\analyzer.exe --dast-url "https://staging.example.com" --authz-matrix authz.yaml --output report.json
+
+# Parameter tampering fuzzer (from OpenAPI-style manifest)
+.\analyzer.exe --dast-url "https://staging.example.com" --tamper-manifest tamper.yaml --output report.json
+```
+
+- `--authz-matrix`: YAML with origin, sessions (bearer/cookie + priority), and endpoints. Flags endpoints where a lower-privileged session receives an equivalent response to a higher-privileged one.
+- `--tamper-manifest`: YAML with origin and endpoints + params. Probes negative/zero/huge/string/empty/null values and flags unexpected 2xx or 5xx.
+- Concurrency harness available programmatically (`scanner.ConcurrencyHarness`) to detect duplicate/oversell on mutating endpoints.
+
+### 3. Passive DAST Scan
 Check the HTTPS, headers, and cookie attributes observed at an authorized endpoint:
 
 ```powershell

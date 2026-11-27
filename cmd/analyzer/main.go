@@ -40,7 +40,7 @@ type options struct {
 	target, output, formats, policy, dastURL, containerImage, sbomFormat, compareID, dbPath, bountyProgram, configPath string
 	track, githubActions, gitlabCI, jenkins, preCommit                                                                 bool
 	dastOnly, dastDirect                                                                                               bool
-	dastTargets, dastSession                                                                                           string
+	dastTargets, dastSession, authzMatrix, tamperManifest                                                              string
 	dastInterval                                                                                                       time.Duration
 	dastMaxRequests                                                                                                    int
 	dastActive                                                                                                         bool
@@ -89,6 +89,8 @@ func parseOptions(args []string) (options, error) {
 	fs.StringVar(&o.dastURL, "dast-url", "", "authorized runtime URL for passive DAST")
 	fs.StringVar(&o.dastTargets, "dast-targets", "", "YAML manifest of an authorized origin and endpoint paths")
 	fs.StringVar(&o.dastSession, "dast-session", "", "use an existing bearer or cookie session in dast mode")
+	fs.StringVar(&o.authzMatrix, "authz-matrix", "", "YAML authz matrix for BOLA/IDOR diff probing")
+	fs.StringVar(&o.tamperManifest, "tamper-manifest", "", "YAML manifest for parameter tampering fuzzer")
 	fs.DurationVar(&o.dastInterval, "dast-interval", 250*time.Millisecond, "minimum interval between DAST requests, including redirects")
 	fs.IntVar(&o.dastMaxRequests, "dast-max-requests", 100, "DAST request budget, including redirects")
 	fs.BoolVar(&o.dastDirect, "dast-no-proxy", false, "ignore proxy environment settings for DAST")
@@ -245,6 +247,38 @@ func run(ctx context.Context, logger *log.Logger, args []string) error {
 	var dastTarget string
 	var dastEndpoints []models.DASTEndpoint
 	var dastErr error
+	if o.authzMatrix != "" {
+		data, e := os.ReadFile(o.authzMatrix)
+		if e != nil {
+			return fmt.Errorf("read authz matrix: %w", e)
+		}
+		var m models.AuthzMatrix
+		if e := yaml.UnmarshalStrict(data, &m); e != nil {
+			return fmt.Errorf("parse authz matrix: %w", e)
+		}
+		af, _, e := (scanner.AuthzDiffEngine{Timeout: time.Duration(cfg.DAST.TimeoutSeconds) * time.Second}).Probe(ctx, m)
+		if e != nil {
+			logger.Printf("authz diff degraded: %v", e)
+		} else {
+			findings = append(findings, af...)
+		}
+	}
+	if o.tamperManifest != "" {
+		data, e := os.ReadFile(o.tamperManifest)
+		if e != nil {
+			return fmt.Errorf("read tamper manifest: %w", e)
+		}
+		var m scanner.TamperManifest
+		if e := yaml.UnmarshalStrict(data, &m); e != nil {
+			return fmt.Errorf("parse tamper manifest: %w", e)
+		}
+		tf, e := (scanner.ParamTamperFuzzer{Timeout: time.Duration(cfg.DAST.TimeoutSeconds) * time.Second}).Run(ctx, m)
+		if e != nil {
+			logger.Printf("param tamper degraded: %v", e)
+		} else {
+			findings = append(findings, tf...)
+		}
+	}
 	if hasDAST {
 		results, e := runDAST(ctx, o, time.Duration(cfg.DAST.TimeoutSeconds)*time.Second)
 		if e != nil {
